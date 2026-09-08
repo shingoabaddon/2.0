@@ -71,6 +71,11 @@ FlipperApplication*
  */
 void flipper_application_free(FlipperApplication* app);
 
+/** Disable XIP for this application (used for plugins).
+ * @param app Application pointer
+ */
+void flipper_application_disable_xip(FlipperApplication* app);
+
 /** Validate elf file and load application metadata
  *
  * @param      app   Application pointer
