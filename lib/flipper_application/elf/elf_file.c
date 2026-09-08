@@ -29,7 +29,7 @@
 #define TRAMPOLINE_CODE_SIZE 6
 
 /**
-ldr r12, [pc, #2]
+l dr r12, [pc, #2]
 bx r12
 */
 const uint8_t trampoline_code_little_endian[TRAMPOLINE_CODE_SIZE] =
@@ -554,98 +554,43 @@ static ELFLoadSectionResult elf_materialize_section(ELFFile* elf, ELFSection* se
 
         if((!storage_file_seek(elf->fd, section->file_offset, true)) ||
            (storage_file_read(elf->fd, staging, section->size) != section->size)) {
-            FURI_LOG_E(TAG, "XIP section read fail");
-            free(staging);
+            FURI_LOG_E(TAG, "XIP staging read failed");
+            aligned_free(staging);
             return ELFLoadSectionResultError;
         }
 
-        /* Allocate flash space */
-        uint32_t flash_addr = xip_region_alloc(&elf->xip_region, section->size, section->file_align);
-        if(flash_addr == 0) {
-            FURI_LOG_E(TAG, "XIP region alloc failed");
-            free(staging);
+        section->data = staging;
+        section->exec_addr = xip_region_alloc(&elf->xip_region, section->size, section->file_align);
+        if(!section->exec_addr) {
+            aligned_free(staging);
+            section->data = NULL;
             return ELFLoadSectionResultNoMemory;
         }
-
-        section->exec_addr = flash_addr;
-
-        /* Relocate against flash addresses while still in RAM staging */
-        /* (relocations computed below use exec_addr) */
-
-        /* Write to flash */
-        if(!xip_region_commit(&elf->xip_region, flash_addr, staging, section->size)) {
-            FURI_LOG_E(TAG, "XIP commit failed");
-            free(staging);
-            return ELFLoadSectionResultError;
-        }
-
-        /* Free staging — code now lives in flash */
-        free(staging);
-        section->data = NULL; /* no RAM copy */
-
-        FURI_LOG_D(TAG, "XIP section at 0x%08lX (%zu bytes)", flash_addr, section->size);
         return ELFLoadSectionResultSuccess;
-    } else {
-        /* Standard RAM loading */
-        size_t safe_size = section->size + 1024;
+    }
 
-        furi_kernel_lock();
-
-        if(memmgr_heap_get_max_free_block() < safe_size) {
-            furi_kernel_unlock();
-            FURI_LOG_E(TAG, "Not enough memory to load section data");
-            return ELFLoadSectionResultNoMemory;
-        }
-
-        section->data = aligned_malloc(section->size, section->file_align);
-        section->exec_addr = (Elf32_Addr)section->data;
-
+    /* RAM path */
+    size_t safe_size = section->size + 1024;
+    furi_kernel_lock();
+    if(memmgr_heap_get_max_free_block() < safe_size) {
         furi_kernel_unlock();
-
-        if((!storage_file_seek(elf->fd, section->file_offset, true)) ||
-           (storage_file_read(elf->fd, section->data, section->size) != section->size)) {
-            FURI_LOG_E(TAG, "    seek/read fail");
-            return ELFLoadSectionResultError;
-        }
-
-        FURI_LOG_D(TAG, "RAM section at 0x%p", section->data);
-        return ELFLoadSectionResultSuccess;
+        FURI_LOG_E(TAG, "Not enough memory to load section data (%lu bytes)", section->size);
+        return ELFLoadSectionResultNoMemory;
     }
-}
-
-/**
- * Set up the XIP region: decide which sections go to flash vs RAM.
- * Called from elf_file_load_section_table after reading all section headers.
- */
-static void elf_setup_xip(ELFFile* elf) {
-    if(elf->xip_disabled) {
-        FURI_LOG_D(TAG, "XIP disabled for this ELF");
-        return;
+    section->data = aligned_malloc(section->size, section->file_align);
+    furi_kernel_unlock();
+    if(!section->data) {
+        return ELFLoadSectionResultNoMemory;
     }
-
-    xip_region_init(&elf->xip_region);
-    if(!elf->xip_region.active) {
-        FURI_LOG_D(TAG, "XIP region not available, falling back to RAM");
-        return;
+    if((!storage_file_seek(elf->fd, section->file_offset, true)) ||
+       (storage_file_read(elf->fd, section->data, section->size) != section->size)) {
+        FURI_LOG_E(TAG, "    seek/read fail");
+        aligned_free(section->data);
+        section->data = NULL;
+        return ELFLoadSectionResultError;
     }
-
-    /* Mark executable sections (.text, .rodata) for XIP */
-    ELFSectionDict_it_t it;
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFSection* section = &itref->value;
-        const char* name = itref->key;
-
-        if(section->sh_flags & SHF_EXECINSTR) {
-            section->xip = true;
-        } else if(str_prefix(name, ".rodata") || str_prefix(name, ".data")) {
-            /* read-only data can also live in XIP */
-            section->xip = true;
-        }
-        /* .bss (SHT_NOBITS) stays in RAM — handled in metadata save */
-    }
-
-    FURI_LOG_I(TAG, "XIP setup complete, region 0x%08lX-0x%08lX", elf->xip_region.base_addr, elf->xip_region.end_addr);
+    section->exec_addr = (Elf32_Addr)section->data;
+    return ELFLoadSectionResultSuccess;
 }
 
 static SectionTypeInfo elf_preload_section(
@@ -653,163 +598,365 @@ static SectionTypeInfo elf_preload_section(
     size_t section_idx,
     Elf32_Shdr* section_header,
     FuriString* name_string) {
+    SectionTypeInfo info = {0};
     const char* name = furi_string_get_cstr(name_string);
-    SectionTypeInfo info;
-    info.type = SectionTypeUnused;
-    info.result = ELFLoadSectionResultSuccess;
 
-    ELFSection* section = elf_file_get_or_put_section(elf, name);
-    section->sec_idx = section_idx;
+    ELFSection* section_p = elf_file_get_or_put_section(elf, name);
+    section_p->sec_idx = section_idx;
 
-    if(IS_FLAGS_SET(section_header->sh_flags, SHF_ALLOC)) {
-        info.type |= SectionTypeData;
-        info.result = elf_save_section_metadata(section, section_header);
+    if(str_prefix(name, ".ARM.") || str_prefix(name, ".rel.ARM.")) {
+        FURI_LOG_D(TAG, "Ignoring ARM section");
+        info.type = SectionTypeUnused;
+        return info;
     }
 
-    if(section_header->sh_type == SHT_RELA || section_header->sh_type == SHT_REL) {
-        info.type |= SectionTypeRelData;
-        section->rel_count = section_header->sh_size / sizeof(Elf32_Rel);
-        section->rel_offset = section_header->sh_offset;
+    if(section_header->sh_type == SHT_NOBITS) {
+        info.type = SectionTypeData;
+        info.result = elf_save_section_metadata(section_p, section_header);
+        return info;
+    }
+
+    if(section_header->sh_flags & SHF_ALLOC) {
+        info.type = SectionTypeData;
+        info.result = elf_save_section_metadata(section_p, section_header);
+        return info;
+    }
+
+    if(section_header->sh_type == SHT_REL) {
+        ELFSection* target = elf_section_of(elf, section_header->sh_info);
+        if(target) {
+            target->rel_count = section_header->sh_size / sizeof(Elf32_Rel);
+            target->rel_offset = section_header->sh_offset;
+        }
+        info.type = SectionTypeRelData;
+        info.result = ELFLoadSectionResultSuccess;
+        return info;
     }
 
     if(section_header->sh_type == SHT_SYMTAB) {
-        info.type |= SectionTypeSymTab;
-        elf->symbol_table = section_header->sh_offset;
         elf->symbol_count = section_header->sh_size / sizeof(Elf32_Sym);
+        elf->symbol_table = section_header->sh_offset;
+        info.type = SectionTypeSymTab;
+        info.result = ELFLoadSectionResultSuccess;
+        return info;
     }
 
     if(section_header->sh_type == SHT_STRTAB) {
-        info.type |= SectionTypeStrTab;
-        if(elf->section_table_strings == 0) {
-            elf->section_table_strings = section_header->sh_offset;
-        }
-        if(section_header->sh_offset != elf->section_table_strings) {
+        if(elf->section_table_strings == section_header->sh_offset) {
+            info.type = SectionTypeStrTab;
+        } else if(elf->symbol_table_strings == 0) {
             elf->symbol_table_strings = section_header->sh_offset;
+            info.type = SectionTypeStrTab;
         }
+        info.result = ELFLoadSectionResultSuccess;
+        return info;
     }
 
-    if(str_prefix(name, ".debug")) {
-        info.type |= SectionTypeDebugLink;
-        elf_load_debug_link(elf, section_header);
+    if(str_prefix(name, ".debug_link")) {
+        info.type = SectionTypeDebugLink;
+        info.result = elf_load_debug_link(elf, section_header) ? ELFLoadSectionResultSuccess
+                                                              : ELFLoadSectionResultError;
+        return info;
     }
 
-    if(str_prefix(name, ".rel") && str_prefix(name + 4, ".text")) {
-        info.type |= SectionTypeFastRelData;
+    if(str_prefix(name, ".fast_rel")) {
+        ELFSection* target = elf_section_of(elf, section_header->sh_info);
+        if(target) {
+            target->fast_rel = elf_file_get_or_put_section(elf, name);
+            target->fast_rel->data = NULL;
+            target->fast_rel->size = section_header->sh_size;
+            target->fast_rel->file_offset = section_header->sh_offset;
+            /* load fast_rel data now (small) */
+            if(section_header->sh_size > 0) {
+                target->fast_rel->data = aligned_malloc(section_header->sh_size, 1);
+                if(target->fast_rel->data &&
+                   storage_file_seek(elf->fd, section_header->sh_offset, true) &&
+                   storage_file_read(elf->fd, target->fast_rel->data, section_header->sh_size) ==
+                       section_header->sh_size) {
+                    info.result = ELFLoadSectionResultSuccess;
+                } else {
+                    info.result = ELFLoadSectionResultError;
+                }
+            } else {
+                info.result = ELFLoadSectionResultSuccess;
+            }
+        }
+        info.type = SectionTypeFastRelData;
+        return info;
     }
 
-    if(str_prefix(name, ".preinit_array")) {
-        elf->preinit_array = section;
-    } else if(str_prefix(name, ".init_array")) {
-        elf->init_array = section;
-    } else if(str_prefix(name, ".fini_array")) {
-        elf->fini_array = section;
-    }
-
+    info.type = SectionTypeUnused;
+    info.result = ELFLoadSectionResultSuccess;
     return info;
 }
 
+ElfProcessSectionResult elf_process_section(
+    ELFFile* elf,
+    const char* name,
+    ElfProcessSection* process_section,
+    void* context) {
+    ElfProcessSectionResult result = ElfProcessSectionResultNotFound;
+    FuriString* section_name = furi_string_alloc();
+    Elf32_Shdr section_header;
+
+    for(size_t section_idx = 1; section_idx < elf->sections_count; section_idx++) {
+        furi_string_reset(section_name);
+        if(!elf_read_section(elf, section_idx, &section_header, section_name)) {
+            break;
+        }
+
+        if(strcmp(furi_string_get_cstr(section_name), name) == 0) {
+            if(process_section(elf->fd, section_header.sh_offset, section_header.sh_size, context)) {
+                result = ElfProcessSectionResultSuccess;
+            } else {
+                result = ElfProcessSectionResultCannotProcess;
+            }
+            break;
+        }
+    }
+
+    furi_string_free(section_name);
+    return result;
+}
+
+/** Reset bump allocator, calculate XIP size, and assign flash addresses to
+ *  XIP-eligible sections. */
+static void elf_xip_assign_addresses(ELFFile* elf) {
+    elf->xip_region.next_free = elf->xip_region.data_start;
+    elf->xip_region.cache_valid = false;
+    elf->xip_region.needs_rerelocation = false;
+
+    ELFSectionDict_it_t it;
+    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+        ELFSectionDict_next(it)) {
+        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
+        if(itref->value.xip) {
+            itref->value.data = NULL;
+            itref->value.exec_addr = 0;
+            itref->value.xip = false;
+        }
+    }
+
+    size_t xip_total = 0;
+    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+        ELFSectionDict_next(it)) {
+        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
+        if((itref->value.sh_flags & SHF_ALLOC) && !(itref->value.sh_flags & SHF_WRITE) &&
+           itref->value.size > 0 && itref->value.file_offset != 0) {
+            size_t aligned_size = (itref->value.size + 7) & ~(size_t)7;
+            xip_total += aligned_size;
+        }
+    }
+
+    if(xip_total == 0) {
+        xip_region_release(&elf->xip_region);
+        return;
+    }
+
+    if(xip_total > (XIP_REGION_MAX_SIZE - XIP_CACHE_HEADER_SIZE)) {
+        FURI_LOG_W(TAG, "XIP sections too large (%zu bytes), falling back to RAM", xip_total);
+        xip_region_release(&elf->xip_region);
+        return;
+    }
+
+    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+        ELFSectionDict_next(it)) {
+        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
+        if((itref->value.sh_flags & SHF_ALLOC) && !(itref->value.sh_flags & SHF_WRITE) &&
+           itref->value.size > 0 && itref->value.file_offset != 0) {
+            size_t aligned_size = (itref->value.size + 7) & ~(size_t)7;
+            itref->value.exec_addr = xip_region_alloc(&elf->xip_region, aligned_size, 8);
+            itref->value.xip = (itref->value.exec_addr != 0);
+        }
+    }
+}
+
+static void elf_setup_xip(ELFFile* elf) {
+    if(elf->xip_disabled) {
+        memset(&elf->xip_region, 0, sizeof(XipRegion));
+        return;
+    }
+
+    size_t remaining_alloc_size = 0;
+    ELFSectionDict_it_t ram_it;
+    for(ELFSectionDict_it(ram_it, elf->sections); !ELFSectionDict_end_p(ram_it);
+        ELFSectionDict_next(ram_it)) {
+        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(ram_it);
+        if((itref->value.sh_flags & SHF_ALLOC) && itref->value.data == NULL) {
+            remaining_alloc_size += itref->value.size;
+        }
+    }
+
+    furi_kernel_lock();
+    size_t max_block = memmgr_heap_get_max_free_block();
+    furi_kernel_unlock();
+
+    size_t ram_needed = remaining_alloc_size + 32768;
+
+    if(ram_needed <= max_block && !elf->xip_forced) {
+        FURI_LOG_I(
+            TAG,
+            "App fits in RAM (%zu bytes, %zu available) — skipping XIP",
+            remaining_alloc_size,
+            max_block);
+        memset(&elf->xip_region, 0, sizeof(XipRegion));
+        return;
+    }
+
+    if(elf->xip_forced) {
+        FURI_LOG_I(TAG, "XIP forced by app (%zu bytes code)", remaining_alloc_size);
+    }
+
+    xip_region_init(&elf->xip_region);
+    if(!elf->xip_region.active) return;
+
+    elf_xip_assign_addresses(elf);
+}
+
 ElfLoadSectionTableResult elf_file_load_section_table(ELFFile* elf) {
-    Elf32_Ehdr ehdr;
-
-    if(!storage_file_seek(elf->fd, 0, true) ||
-       storage_file_read(elf->fd, &ehdr, sizeof(Elf32_Ehdr)) != sizeof(Elf32_Ehdr)) {
-        FURI_LOG_E(TAG, "Failed to read ELF header");
-        return ElfLoadSectionTableResultError;
-    }
-
-    if(ehdr.e_ident[EI_MAG0] != ELFMAG0 || ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
-       ehdr.e_ident[EI_MAG2] != ELFMAG2 || ehdr.e_ident[EI_MAG3] != ELFMAG3) {
-        FURI_LOG_E(TAG, "Not an ELF file");
-        return ElfLoadSectionTableResultError;
-    }
-
-    if(ehdr.e_machine != EM_ARM) {
-        FURI_LOG_E(TAG, "Not an ARM ELF file");
-        return ElfLoadSectionTableResultError;
-    }
-
-    elf->entry = ehdr.e_entry;
-    elf->sections_count = ehdr.e_shnum;
-    elf->section_table = ehdr.e_shoff;
+    SectionType loaded_sections = 0;
+    FuriString* name = furi_string_alloc();
+    ElfLoadSectionTableResult result = ElfLoadSectionTableResultSuccess;
 
     FURI_LOG_D(TAG, "Scan ELF indexs...");
 
     for(size_t section_idx = 1; section_idx < elf->sections_count; section_idx++) {
         Elf32_Shdr section_header;
-        FuriString* name_string = furi_string_alloc();
 
-        if(!elf_read_section(elf, section_idx, &section_header, name_string)) {
-            furi_string_free(name_string);
-            FURI_LOG_E(TAG, "Failed to read section %zu", section_idx);
-            return ElfLoadSectionTableResultError;
+        furi_string_reset(name);
+        if(!elf_read_section(elf, section_idx, &section_header, name)) {
+            loaded_sections = 0;
+            break;
         }
 
-        SectionTypeInfo info = elf_preload_section(elf, section_idx, &section_header, name_string);
-        furi_string_free(name_string);
+        FURI_LOG_D(
+            TAG, "Preloading data for section #%d %s", section_idx, furi_string_get_cstr(name));
+        SectionTypeInfo section_type_info =
+            elf_preload_section(elf, section_idx, &section_header, name);
+        loaded_sections |= section_type_info.type;
 
-        if(info.result == ELFLoadSectionResultNoMemory) {
-            return ElfLoadSectionTableResultNoMemory;
-        } else if(info.result == ELFLoadSectionResultError) {
-            return ElfLoadSectionTableResultError;
+        if(section_type_info.result != ELFLoadSectionResultSuccess) {
+            if(section_type_info.result == ELFLoadSectionResultNoMemory) {
+                FURI_LOG_E(TAG, "Not enough memory");
+                result = ElfLoadSectionTableResultNoMemory;
+            } else if(section_type_info.result == ELFLoadSectionResultError) {
+                FURI_LOG_E(TAG, "Error loading section");
+                result = ElfLoadSectionTableResultError;
+            }
+
+            loaded_sections = 0;
+            break;
         }
     }
 
-    /* Set up XIP after all section metadata is known */
-    elf_setup_xip(elf);
+    furi_string_free(name);
 
-    return ElfLoadSectionTableResultSuccess;
+    if(result != ElfLoadSectionTableResultSuccess) {
+        return result;
+    } else {
+        bool sections_valid =
+            IS_FLAGS_SET(loaded_sections, SectionTypeSymTab | SectionTypeStrTab) |
+            IS_FLAGS_SET(loaded_sections, SectionTypeFastRelData);
+        if(sections_valid) {
+            elf_setup_xip(elf);
+
+            ELFSectionDict_it_t it;
+            for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+                ELFSectionDict_next(it)) {
+                ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
+                ELFSection* sec = &itref->value;
+
+                if(!sec->xip) {
+                    ELFLoadSectionResult res = elf_materialize_section(elf, sec);
+                    if(res == ELFLoadSectionResultNoMemory) {
+                        return ElfLoadSectionTableResultNoMemory;
+                    } else if(res != ELFLoadSectionResultSuccess) {
+                        return ElfLoadSectionTableResultError;
+                    }
+                    sec->exec_addr = (Elf32_Addr)sec->data;
+                }
+            }
+            return ElfLoadSectionTableResultSuccess;
+        } else {
+            return ElfLoadSectionTableResultError;
+        }
+    }
 }
 
 ELFFileLoadStatus elf_file_load_sections(ELFFile* elf) {
+    furi_check(elf->fd != NULL);
+    ELFFileLoadStatus status = ELFFileLoadStatusSuccess;
     ELFSectionDict_it_t it;
+
+    AddressCache_init(elf->relocation_cache);
+
+    /* Phase 1: relocate non-XIP (RAM) sections */
     for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
         ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFSection* section = &itref->value;
-
-        if(section->size == 0) continue;
-        if(section->sh_flags & SHF_NOBITS) continue; /* BSS already in RAM */
-
-        ELFLoadSectionResult result = elf_materialize_section(elf, section);
-        if(result == ELFLoadSectionResultNoMemory) {
-            return ELFFileLoadStatusUnspecifiedError;
-        } else if(result == ELFLoadSectionResultError) {
-            return ELFFileLoadStatusUnspecifiedError;
+        ELFSection* sec = &itref->value;
+        if(sec->xip) continue;
+        if(sec->rel_count == 0) continue;
+        if(!elf_relocate(elf, sec)) {
+            status = ELFFileLoadStatusMissingImports;
+            break;
         }
     }
 
-    /* Erase and that's it for XIP — commits already done per-section */
-    if(elf->xip_region.active) {
-        /* All XIP sections committed individually; nothing more to erase */
-    }
+    /* Phase 2: materialize + relocate + commit XIP sections */
+    if(status == ELFFileLoadStatusSuccess && elf->xip_region.active) {
+        for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+            ELFSectionDict_next(it)) {
+            ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
+            ELFSection* sec = &itref->value;
+            if(!sec->xip || sec->size == 0) continue;
 
-    /* Relocate all sections */
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFSection* section = &itref->value;
-
-        if(section->rel_count > 0) {
-            if(!elf_relocate(elf, section)) {
-                FURI_LOG_E(TAG, "Relocation failed for section %s", itref->key);
-                return ELFFileLoadStatusUnspecifiedError;
+            ELFLoadSectionResult mat_res = elf_materialize_section(elf, sec);
+            if(mat_res == ELFLoadSectionResultSuccess) {
+                if(!elf_relocate(elf, sec)) {
+                    aligned_free(sec->data);
+                    sec->data = NULL;
+                    status = ELFFileLoadStatusMissingImports;
+                    break;
+                }
+                if(!xip_region_commit(&elf->xip_region, sec->exec_addr, sec->data, sec->size)) {
+                    aligned_free(sec->data);
+                    sec->data = NULL;
+                    status = ELFFileLoadStatusUnspecifiedError;
+                    break;
+                }
+                aligned_free(sec->data);
+                sec->data = (void*)sec->exec_addr;
+            } else if(mat_res == ELFLoadSectionResultNoMemory) {
+                FURI_LOG_E(TAG, "XIP section too large for staging");
+                status = ELFFileLoadStatusUnspecifiedError;
+                break;
+            } else {
+                status = ELFFileLoadStatusUnspecifiedError;
+                break;
             }
         }
     }
 
-    return ELFFileLoadStatusSuccess;
+    /* Fixing up entry point */
+    if(status == ELFFileLoadStatusSuccess) {
+        ELFSection* text_section = elf_file_get_section(elf, ".text");
+        if(text_section == NULL) {
+            FURI_LOG_E(TAG, "No .text section found");
+            status = ELFFileLoadStatusUnspecifiedError;
+        } else {
+            elf->entry += (uint32_t)text_section->exec_addr;
+        }
+    }
+
+    elf_file_maybe_release_fd(elf);
+    return status;
 }
 
 void elf_file_call_init(ELFFile* elf) {
-    if(elf->init_array_called) return;
+    furi_check(!elf->init_array_called);
+    elf_file_call_section_list(elf->preinit_array, false);
+    elf_file_call_section_list(elf->init_array, false);
     elf->init_array_called = true;
-
-    if(elf->preinit_array && elf->preinit_array->data) {
-        entry_t* preinit = (entry_t*)elf->preinit_array->exec_addr;
-        /* simplified: just mark done */
-    }
-    if(elf->init_array && elf->init_array->exec_addr) {
-        entry_t* init = (entry_t*)elf->init_array->exec_addr;
-        /* constructors called by runtime */
-    }
 }
 
 bool elf_file_is_init_complete(ELFFile* elf) {
@@ -817,64 +964,31 @@ bool elf_file_is_init_complete(ELFFile* elf) {
 }
 
 void* elf_file_get_entry_point(ELFFile* elf) {
-    if(elf->entry == 0) return NULL;
-    /* entry is a virtual address; find which section contains it */
-    ELFSectionDict_it_t it;
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFSection* section = &itref->value;
-        if(section->exec_addr && elf->entry >= section->exec_addr &&
-           elf->entry < section->exec_addr + section->size) {
-            return (void*)(section->exec_addr + (elf->entry - section->exec_addr));
-        }
-    }
+    furi_check(elf->init_array_called);
     return (void*)elf->entry;
 }
 
 void elf_file_call_fini(ELFFile* elf) {
-    if(elf->fini_array && elf->fini_array->exec_addr) {
-        entry_t* fini = (entry_t*)elf->fini_array->exec_addr;
-    }
+    furi_check(elf->init_array_called);
+    elf_file_call_section_list(elf->fini_array, true);
     elf->init_array_called = false;
 }
 
-const ElfApiInterface* elf_file_get_api_interface(ELFFile* elf) {
-    return elf->api_interface;
+const ElfApiInterface* elf_file_get_api_interface(ELFFile* elf_file) {
+    return elf_file->api_interface;
 }
 
-void elf_file_init_debug_info(ELFFile* elf, ELFDebugInfo* debug_info) {
-    debug_info->debug_link_info = elf->debug_link_info;
-    debug_info->entry = elf->entry;
-    debug_info->mmap_entry_count = 0;
-    debug_info->mmap_entries = NULL;
-
-    ELFSectionDict_it_t it;
-    size_t count = 0;
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        count++;
-    }
-    if(count == 0) return;
-
-    debug_info->mmap_entries = malloc(count * sizeof(ELFMemoryMapEntry));
-    debug_info->mmap_entry_count = count;
-
-    size_t idx = 0;
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFMemoryMapEntry* entry = &debug_info->mmap_entries[idx];
-        entry->name = itref->key;
-        entry->address = itref->value.exec_addr ? itref->value.exec_addr : (uint32_t)itref->value.data;
-        idx++;
-    }
+void elf_file_init_debug_info(ELFFile* elf_file, ELFDebugInfo* debug_info) {
+    debug_info->debug_link_size = elf_file->debug_link_info.debug_link_size;
+    debug_info->debug_link = elf_file->debug_link_info.debug_link;
+    debug_info->entry = elf_file->entry;
 }
 
 void elf_file_clear_debug_info(ELFDebugInfo* debug_info) {
-    memset(&debug_info->debug_link_info, 0, sizeof(ELFDebugLinkInfo));
-    if(debug_info->mmap_entries) {
-        free(debug_info->mmap_entries);
-        debug_info->mmap_entries = NULL;
+    if(debug_info->debug_link) {
+        free(debug_info->debug_link);
+        debug_info->debug_link = NULL;
     }
-    debug_info->mmap_entry_count = 0;
 }
 
 ELFFile* elf_file_alloc(Storage* storage, const ElfApiInterface* api_interface) {
@@ -884,20 +998,8 @@ ELFFile* elf_file_alloc(Storage* storage, const ElfApiInterface* api_interface) 
     elf->xip_disabled = false;
     elf->xip_forced = false;
     ELFSectionDict_init(elf->sections);
-    AddressCache_init(elf->relocation_cache);
     AddressCache_init(elf->trampoline_cache);
     elf->init_array_called = false;
-    elf->preinit_array = NULL;
-    elf->init_array = NULL;
-    elf->fini_array = NULL;
-    elf->entry = 0;
-    elf->sections_count = 0;
-    elf->section_table = 0;
-    elf->section_table_strings = 0;
-    elf->symbol_count = 0;
-    elf->symbol_table = 0;
-    elf->symbol_table_strings = 0;
-    memset(&elf->debug_link_info, 0, sizeof(ELFDebugLinkInfo));
     memset(&elf->xip_region, 0, sizeof(XipRegion));
     return elf;
 }
@@ -924,56 +1026,83 @@ uint32_t elf_file_get_xip_end(const ELFFile* elf) {
     return elf->xip_region.end_addr;
 }
 
-bool elf_file_open(ELFFile* elf, const char* path) {
-    furi_check(elf);
-    furi_check(path);
-    elf_file_maybe_release_fd(elf);
-    return storage_file_open(elf->fd, path, FSAM_READ, FSOM_OPEN_EXISTING);
-}
-
 void elf_file_free(ELFFile* elf) {
-    furi_check(elf);
     xip_region_release(&elf->xip_region);
-    elf_file_maybe_release_fd(elf);
-    storage_file_free(elf->fd);
-    ELFSectionDict_it_t it;
-    for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it); ELFSectionDict_next(it)) {
-        ELFSectionDict_itref_t* itref = ELFSectionDict_ref(it);
-        ELFSection* section = &itref->value;
-        if(section->data) {
-            free(section->data);
-        }
-        if(section->fast_rel) {
-            free(section->fast_rel);
-        }
+
+    if(elf->init_array_called) {
+        FURI_LOG_W(TAG, "Init array was called, but fini array wasn't");
+        elf_file_call_section_list(elf->fini_array, true);
     }
-    ELFSectionDict_clear(elf->sections);
-    AddressCache_clear(elf->relocation_cache);
-    AddressCache_clear(elf->trampoline_cache);
+
+    {
+        ELFSectionDict_it_t it;
+        for(ELFSectionDict_it(it, elf->sections); !ELFSectionDict_end_p(it);
+            ELFSectionDict_next(it)) {
+            const ELFSectionDict_itref_t* itref = ELFSectionDict_cref(it);
+            if(!itref->value.xip) {
+                aligned_free(itref->value.data);
+            }
+            if(itref->value.fast_rel) {
+                aligned_free(itref->value.fast_rel->data);
+                free(itref->value.fast_rel);
+            }
+            free((void*)itref->key);
+        }
+        ELFSectionDict_clear(elf->sections);
+    }
+
+    {
+        AddressCache_it_t it;
+        for(AddressCache_it(it, elf->trampoline_cache); !AddressCache_end_p(it);
+            AddressCache_next(it)) {
+            const AddressCache_itref_t* itref = AddressCache_cref(it);
+            free((void*)itref->value);
+        }
+        AddressCache_clear(elf->trampoline_cache);
+    }
+
+    if(elf->debug_link_info.debug_link) {
+        free(elf->debug_link_info.debug_link);
+    }
+
+    elf_file_maybe_release_fd(elf);
     free(elf);
 }
 
-ElfProcessSectionResult elf_process_section(
-    ELFFile* elf,
-    const char* name,
-    ElfProcessSection* process_section,
-    void* context) {
-    furi_check(elf);
-    furi_check(name);
-    furi_check(process_section);
+bool elf_file_open(ELFFile* elf, const char* path) {
+    Elf32_Ehdr h;
+    Elf32_Shdr sH;
 
-    ELFSection* section = elf_file_get_section(elf, name);
-    if(!section) {
-        return ElfProcessSectionResultNotFound;
+    if(!storage_file_open(elf->fd, path, FSAM_READ, FSOM_OPEN_EXISTING) ||
+       !storage_file_seek(elf->fd, 0, true) ||
+       storage_file_read(elf->fd, &h, sizeof(h)) != sizeof(h) ||
+       !storage_file_seek(elf->fd, h.e_shoff + h.e_shstrndx * sizeof(sH), true) ||
+       storage_file_read(elf->fd, &sH, sizeof(Elf32_Shdr)) != sizeof(Elf32_Shdr)) {
+        return false;
     }
 
-    if(section->size == 0) {
-        return ElfProcessSectionResultCannotProcess;
-    }
+    elf->entry = h.e_entry;
+    elf->sections_count = h.e_shnum;
+    elf->section_table = h.e_shoff;
+    elf->section_table_strings = sH.sh_offset;
+    return true;
+}
 
-    if(!process_section(elf->fd, section->file_offset, section->size, context)) {
-        return ElfProcessSectionResultCannotProcess;
-    }
+static void elf_file_call_section_list(ELFSection* section, bool reverse_order) {
+    if(section && section->size) {
+        const uint32_t* start = section->data;
+        const uint32_t* end = section->data + section->size;
 
-    return ElfProcessSectionResultSuccess;
+        if(reverse_order) {
+            while(end > start) {
+                end--;
+                ((void (*)(void))(*end))();
+            }
+        } else {
+            while(start < end) {
+                ((void (*)(void))(*start))();
+                start++;
+            }
+        }
+    }
 }
