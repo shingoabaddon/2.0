@@ -18,6 +18,14 @@ extern "C" {
 #define FAP_MANIFEST_MAX_APP_NAME_LENGTH 32
 #define FAP_MANIFEST_MAX_ICON_SIZE 32 // TODO FL-3524: reduce size?
 
+/** Application manifest flags (FoxFW + Moon XIP extension) */
+typedef enum FURI_PACKED {
+    FlipperApplicationFlagDefault = 0,
+    FlipperApplicationFlagInsomniaSafe = (1 << 0),
+    FlipperApplicationFlagForceXIP = (1 << 1),
+    FlipperApplicationFlagUnloadAssetPacks = (1 << 7),
+} FlipperApplicationFlag;
+
 #pragma pack(push, 1)
 
 typedef struct {
@@ -42,7 +50,25 @@ typedef struct {
     char icon[FAP_MANIFEST_MAX_ICON_SIZE];
 } FlipperApplicationManifestV1;
 
-typedef FlipperApplicationManifestV1 FlipperApplicationManifest;
+/** Original FoxFW manifest (no flags field) */
+typedef FlipperApplicationManifestV1 FlipperApplicationManifestOfw;
+
+typedef struct {
+    FlipperApplicationManifestBase base;
+    uint16_t stack_size;
+    uint32_t app_version;
+    char name[FAP_MANIFEST_MAX_APP_NAME_LENGTH];
+    char has_icon;
+    char icon[FAP_MANIFEST_MAX_ICON_SIZE];
+
+    FlipperApplicationFlag flags;
+} FlipperApplicationManifestV1Ex;
+
+typedef FlipperApplicationManifestV1Ex FlipperApplicationManifestEx;
+
+/** Default manifest type: extended (with flags). Older OFW manifests are
+ *  still accepted at load time via size checks. */
+typedef FlipperApplicationManifestEx FlipperApplicationManifest;
 
 #pragma pack(pop)
 
