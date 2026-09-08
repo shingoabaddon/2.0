@@ -1,4 +1,5 @@
 #include "rpc_i.h"
+#include "rpc_gui_screen_suppress.h"
 #include <gui/gui_i.h>
 #include <assets_icons.h>
 #include <notification/notification_app.h>
@@ -73,6 +74,11 @@ typedef struct {
 
     bool virtual_display_not_empty;
     bool is_streaming;
+    /* Latches once suppressed (see rpc_gui_screen_suppress.h) so at most
+     * one placeholder frame goes out per suppression cycle - reset the
+     * moment suppression lifts, so the very next real redraw resumes live
+     * frames immediately rather than waiting for anything else. */
+    bool suppressed_frame_sent;
 
     uint32_t input_key_counter[InputKeyMAX];
     uint32_t input_counter;
@@ -125,7 +131,20 @@ static void rpc_system_gui_screen_stream_frame_callback(
 
     furi_assert(size == rpc_gui->transmit_frame->content.gui_screen_frame.data->size);
 
-    memcpy(buffer, data, size);
+    if(rpc_gui_screen_stream_is_suppressed()) {
+        /* Send exactly one placeholder frame per suppression cycle, then
+         * go completely quiet - no further transmit-thread wakeup, no
+         * RPC/CLI traffic - until un-suppressed. See rpc_gui_screen_
+         * suppress.h for why (qFlipper's screen-stream RAM/CPU cost while
+         * on a RAM-sensitive screen like SubGhz Read). */
+        if(rpc_gui->suppressed_frame_sent) return;
+        if(!rpc_gui_screen_stream_get_placeholder_frame(buffer, size)) return;
+        rpc_gui->suppressed_frame_sent = true;
+    } else {
+        rpc_gui->suppressed_frame_sent = false;
+        memcpy(buffer, data, size);
+    }
+
     rpc_gui->transmit_frame->content.gui_screen_frame.orientation =
         rpc_system_gui_screen_orientation_map[orientation];
 
@@ -183,6 +202,8 @@ static void rpc_system_gui_start_screen_stream_process(const PB_Main* request, v
         rpc_send_and_release_empty(session, request->command_id, PB_CommandStatus_OK);
 
         rpc_gui->is_streaming = true;
+        rpc_gui->suppressed_frame_sent = false;
+        rpc_gui_screen_stream_mark_active(true);
         size_t framebuffer_size = gui_get_framebuffer_size(rpc_gui->gui);
         // Reusable Frame
         rpc_gui->transmit_frame = malloc(sizeof(PB_Main));
@@ -213,6 +234,7 @@ static void rpc_system_gui_stop_screen_stream_process(const PB_Main* request, vo
 
     if(rpc_gui->is_streaming) {
         rpc_gui->is_streaming = false;
+        rpc_gui_screen_stream_mark_active(false);
         // Remove GUI framebuffer callback
         gui_remove_framebuffer_callback(
             rpc_gui->gui, rpc_system_gui_screen_stream_frame_callback, context);
@@ -513,6 +535,7 @@ void rpc_system_gui_free(void* context) {
 
     if(rpc_gui->is_streaming) {
         rpc_gui->is_streaming = false;
+        rpc_gui_screen_stream_mark_active(false);
         // Remove GUI framebuffer callback
         gui_remove_framebuffer_callback(
             rpc_gui->gui, rpc_system_gui_screen_stream_frame_callback, context);

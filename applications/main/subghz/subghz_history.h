@@ -6,6 +6,7 @@
 #include <furi_hal.h>
 #include <lib/flipper_format/flipper_format.h>
 #include <lib/subghz/types.h>
+#include <lib/subghz/protocols/base.h>
 
 typedef struct SubGhzHistory SubGhzHistory;
 

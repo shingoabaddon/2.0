@@ -5,8 +5,8 @@
 #include <targets/f7/furi_hal/furi_hal_subghz.h>
 
 /* Fixed list position of the two nav-only rows below (File Prefix, Custom
- * Frequencies) - always after Protocol Names and before Counter Incr., so
- * the position is stable whether or not the debug-only rows are present. */
+ * Frequencies) - always after Bypass Region Lock and before Counter Incr.,
+ * so the position is stable whether or not the debug-only rows are present. */
 #define RADIO_SETTINGS_ROW_FILE_PREFIX   5
 #define RADIO_SETTINGS_ROW_CUSTOM_FREQ   6
 
@@ -86,6 +86,30 @@ const char* const tx_power_text[TX_POWER_COUNT] = {
     "-20dBm",
     "-30dBm",
 };
+
+// Frequency offset: -500kHz to +500kHz in 10kHz steps = 101 values, center at index 50
+#define FREQ_OFFSET_COUNT  101
+#define FREQ_OFFSET_CENTER 50
+#define FREQ_OFFSET_STEP   10000 // 10 kHz
+
+static void subghz_scene_radio_settings_set_freq_offset(VariableItem* item) {
+    SubGhz* subghz = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+
+    int32_t offset_hz = ((int32_t)index - FREQ_OFFSET_CENTER) * FREQ_OFFSET_STEP;
+
+    char offset_str[16];
+    if(offset_hz == 0) {
+        snprintf(offset_str, sizeof(offset_str), "0 kHz");
+    } else {
+        snprintf(offset_str, sizeof(offset_str), "%+ld kHz", (long)(offset_hz / 1000));
+    }
+    variable_item_set_current_value_text(item, offset_str);
+
+    subghz->last_settings->frequency_offset = offset_hz;
+    subghz_txrx_set_frequency_offset(subghz->txrx, offset_hz);
+    subghz_save_all(subghz);
+}
 
 #define VIZ_MODE_COUNT 2
 static const char* const viz_mode_text[VIZ_MODE_COUNT] = {
@@ -265,6 +289,28 @@ void subghz_scene_radio_settings_on_enter(void* context) {
     }
 
     variable_item_list_add(variable_item_list, "Custom Frequencies", 0, NULL, NULL);
+
+    item = variable_item_list_add(
+        variable_item_list,
+        "Freq Offset",
+        FREQ_OFFSET_COUNT,
+        subghz_scene_radio_settings_set_freq_offset,
+        subghz);
+    {
+        int32_t offset_hz = subghz->last_settings->frequency_offset;
+        int32_t offset_idx_signed = (offset_hz / FREQ_OFFSET_STEP) + FREQ_OFFSET_CENTER;
+        if(offset_idx_signed < 0) offset_idx_signed = 0;
+        if(offset_idx_signed > FREQ_OFFSET_COUNT - 1) offset_idx_signed = FREQ_OFFSET_COUNT - 1;
+        uint8_t offset_idx = (uint8_t)offset_idx_signed;
+        variable_item_set_current_value_index(item, offset_idx);
+        char offset_str[16];
+        if(offset_hz == 0) {
+            snprintf(offset_str, sizeof(offset_str), "0 kHz");
+        } else {
+            snprintf(offset_str, sizeof(offset_str), "%+ld kHz", (long)(offset_hz / 1000));
+        }
+        variable_item_set_current_value_text(item, offset_str);
+    }
 
     item = variable_item_list_add(
         variable_item_list,

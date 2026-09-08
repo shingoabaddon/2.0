@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <lib/lfrfid/tools/t5577.h>
+#include "t5577.h"
 
 
 #define MODULATION_NUM 11

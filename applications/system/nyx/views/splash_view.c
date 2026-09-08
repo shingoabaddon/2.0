@@ -40,7 +40,7 @@ static void draw_lid(Canvas* canvas, float open, int sign) {
     for(int i = 0; i <= 24; i++) {
         float t = (float)i / 24.0f; // 0..1 across the width
         int x = SPLASH_EYE_CX - SPLASH_EYE_HALF_W + (int)(t * 2 * SPLASH_EYE_HALF_W);
-        /* sinf gives the almond curve — zero at the corners, max at centre. */
+        /* sinf gives the almond curve — zero at the corners, max at center. */
         int y = SPLASH_EYE_CY + sign * (int)(sinf(t * (float)M_PI) * SPLASH_EYE_HALF_H * open);
         if(i) canvas_draw_line(canvas, prev_x, prev_y, x, y);
         prev_x = x;

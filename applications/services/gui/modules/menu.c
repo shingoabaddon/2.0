@@ -1,6 +1,7 @@
 #include "menu.h"
 
 #include <gui/elements.h>
+#include <gui/icon_i.h>
 #include <gui/icon_animation_i.h>
 #include <assets_icons.h>
 #include <furi.h>
@@ -11,6 +12,7 @@
 
 struct Menu {
     View* view;
+    FuriTimer* scroll_timer;
 };
 
 typedef struct {
@@ -28,6 +30,7 @@ typedef struct {
     MenuItemArray_t items;
     size_t position;
     uint8_t cached_theme; // loaded once at alloc, updated via menu_set_theme
+    size_t scroll_counter; // drives the Carousel style's selected-label marquee
 } MenuModel;
 
 #define FOX_CELL_W   40
@@ -36,6 +39,14 @@ typedef struct {
 #define FOX_COLS      3
 #define FOX_ROWS      2
 #define FOX_VISIBLE  (FOX_COLS * FOX_ROWS)   // 6 cells shown at once
+
+#define TINY_CELL_W    24
+#define TINY_CELL_H    16
+#define TINY_GAP        2
+#define TINY_COLS       5
+#define TINY_ROWS       3
+#define TINY_VISIBLE  (TINY_COLS * TINY_ROWS) // 15 cells shown at once
+#define TINY_HEADER_H  10
 
 static void menu_process_up(Menu* menu);
 static void menu_process_down(Menu* menu);
@@ -55,6 +66,27 @@ static size_t fox_shift(size_t position, size_t count) {
     return (col - 1) * FOX_ROWS;
 }
 
+// Same windowing scheme as fox_shift(), sized for the Tiny 5x3 grid.
+static size_t tiny_shift(size_t position, size_t count) {
+    if(count <= TINY_VISIBLE) return 0;
+    size_t col = position / TINY_ROWS;
+    if(col < 1) return 0;
+    size_t last_col = (count - 1) / TINY_ROWS;
+    if(col + 1 >= last_col) {
+        size_t start_col = (last_col + 1 > TINY_COLS) ? last_col + 1 - TINY_COLS : 0;
+        return start_col * TINY_ROWS;
+    }
+    return (col - 1) * TINY_ROWS;
+}
+
+// Last valid row index within a Tiny-grid column, accounting for a
+// partially-filled final column.
+static size_t tiny_last_row_in_col(size_t col, size_t count) {
+    size_t remaining = count - col * TINY_ROWS;
+    size_t rows_here = (remaining < TINY_ROWS) ? remaining : TINY_ROWS;
+    return rows_here - 1;
+}
+
 static const char* menu_fox_label(const char* label) {
     if(!label) return label;
     if(strcmp(label, "Sub-GHz") == 0)             return "SubGhz";
@@ -62,6 +94,30 @@ static const char* menu_fox_label(const char* label) {
     if(strcmp(label, "Fox Settings") == 0)         return "Fox";
     if(strcmp(label, "Sub-GHz Bruteforcer") == 0) return "S-Brute";
     return label;
+}
+
+// Ported from Momentum's real MenuStylePs4 implementation (applications/
+// services/gui/modules/menu.c, called Carousel here) - draws the current
+// animation frame of an item's icon centered in the given box, regardless
+// of the box's own size.
+static void menu_centered_icon(
+    Canvas* canvas, MenuItem* item, size_t x, size_t y, size_t width, size_t height) {
+    canvas_draw_icon_animation(
+        canvas,
+        x + (width - item->icon->icon->width) / 2,
+        y + (height - item->icon->icon->height) / 2,
+        item->icon);
+}
+
+// Momentum's marquee: counts down to 0 then holds, only for the selected
+// item - side cells never scroll since they show icon only.
+static size_t menu_scroll_counter(MenuModel* model, bool selected) {
+    if(!selected) return 0;
+    size_t scroll_counter = model->scroll_counter;
+    if(scroll_counter > 0) {
+        scroll_counter--;
+    }
+    return scroll_counter;
 }
 
 static void menu_draw_callback(Canvas* canvas, void* _model) {
@@ -75,8 +131,8 @@ static void menu_draw_callback(Canvas* canvas, void* _model) {
         return;
     }
 
-    uint8_t theme = fox_theme_is_active() ? 1u : 0u;
-    /* If the theme changed since last draw (e.g. user toggled it in Fox Settings),
+    uint8_t theme = fox_theme_get_style();
+    /* If the theme changed since last draw (e.g. user changed it in Fox Settings),
      * sync cached_theme so enter/exit animation logic stays consistent. */
     model->cached_theme = theme;
 
@@ -98,6 +154,164 @@ static void menu_draw_callback(Canvas* canvas, void* _model) {
                 menu_fox_label(item->label),
                 item->icon,            // IconAnimation* — draws current animated frame
                 item_idx == position);
+        }
+    } else if(theme == 2) {
+        // Full port of Momentum's real MenuStylePs4 draw case (called
+        // Carousel here) - asymmetric sliding window (1 item left, current,
+        // 4 items right of it), bigger frame + "Start" banner on the
+        // selected item, everyone else icon-only, dotted scrollbar along
+        // the bottom edge. Momentum also shows a "Level N" dolphin readout
+        // next to the device name here - dropped, since FoxFW's own
+        // Dolphin service is a minimal stub that always reports level 1
+        // (see dolphin.h), so a real port of that piece would just be
+        // permanently frozen text. Only this main Apps menu ever applies
+        // this style - see menu_alloc()/menu_set_theme() - and it has no
+        // settings of its own beyond the Menu Style picker itself.
+        {
+            // Device name centered + bold, with a bottom-rounded border (no
+            // top line - the two verticals just end flush/square at the top).
+            const char* name = furi_hal_version_get_name_ptr();
+            canvas_set_font(canvas, FontPrimary);
+            size_t name_w = canvas_string_width(canvas, name);
+            size_t name_h = canvas_current_font_height(canvas);
+            size_t box_w  = name_w + 6;
+            size_t box_h  = name_h + 3;
+            int32_t box_x = (128 - (int32_t)box_w) / 2;
+            int32_t box_y = 0;
+            int32_t bx1   = box_x + (int32_t)box_w - 1;
+            int32_t by1   = box_y + (int32_t)box_h - 1;
+
+            canvas_draw_box(canvas, box_x, box_y, 2, box_h);
+            canvas_draw_box(canvas, bx1 - 1, box_y, 2, box_h);
+            canvas_draw_box(canvas, box_x, by1 - 1, box_w, 2);
+            canvas_set_color(canvas, ColorWhite);
+            canvas_draw_dot(canvas, box_x, by1);
+            canvas_draw_dot(canvas, bx1, by1);
+            canvas_set_color(canvas, ColorBlack);
+
+            canvas_draw_str_aligned(canvas, 64, 1, AlignCenter, AlignTop, name);
+        }
+
+        for(int8_t i = -1; i <= 4; i++) {
+            size_t shift_position = position + i;
+            if(shift_position >= items_count) continue;
+
+            MenuItem* item = MenuItemArray_get(model->items, shift_position);
+            size_t width = 20;
+            size_t height = 20;
+            size_t pos_x = 36;
+            size_t pos_y = 27;
+            if(i == 0) {
+                width += 10;
+                height += 10;
+                pos_y += 2;
+                canvas_draw_box(canvas, pos_x - width / 2, pos_y + height / 2, width, 9);
+                canvas_set_color(canvas, ColorWhite);
+                canvas_set_font(canvas, FontBatteryPercent);
+                canvas_draw_str_aligned(
+                    canvas, pos_x, pos_y + height / 2 + 1, AlignCenter, AlignTop, "Start");
+
+                canvas_set_color(canvas, ColorBlack);
+                canvas_set_font(canvas, FontSecondary);
+                size_t scroll_counter = menu_scroll_counter(model, true);
+                elements_scrollable_text_line_str(
+                    canvas,
+                    pos_x + width / 2 + 2,
+                    pos_y + height / 2 + 7,
+                    74,
+                    menu_fox_label(item->label),
+                    scroll_counter,
+                    false,
+                    false);
+            } else {
+                pos_x += (width + 1) * i + (i < 0 ? -6 : 6);
+            }
+            canvas_draw_frame(canvas, pos_x - width / 2, pos_y - height / 2, width, height);
+            menu_centered_icon(canvas, item, pos_x - 7, pos_y - 7, 14, 14);
+        }
+        elements_scrollbar_horizontal(canvas, 0, 64, 128, position, items_count);
+    } else if(theme == 3) {
+        // Full port of Momentum's real MenuStyleDsi draw case (called
+        // Slider here) - 5-item wraparound window (2 either side of the
+        // selected item, wrapping past both ends of the list). The
+        // selected item sits in a bold frame with a notch cut into the top
+        // edge and "START" printed beneath it; everyone else gets a plain
+        // rounded frame. Dotted scrollbar along the bottom edge, same as
+        // Carousel.
+        for(int8_t i = -2; i <= 2; i++) {
+            size_t shift_position = (position + items_count + (size_t)i) % items_count;
+            MenuItem* item = MenuItemArray_get(model->items, shift_position);
+            size_t width = 24;
+            size_t height = 26;
+            int32_t pos_x = 64;
+            int32_t pos_y = 36;
+            if(i == 0) {
+                width += 6;
+                height += 4;
+                elements_bold_rounded_frame(
+                    canvas, pos_x - (int32_t)width / 2, pos_y - (int32_t)height / 2, width, height + 5);
+                canvas_set_font(canvas, FontBatteryPercent);
+                canvas_draw_str_aligned(
+                    canvas, pos_x - 9, pos_y + (int32_t)height / 2 + 1, AlignCenter, AlignBottom, "S");
+                canvas_draw_str_aligned(
+                    canvas, pos_x, pos_y + (int32_t)height / 2 + 1, AlignCenter, AlignBottom, "TAR");
+                canvas_draw_str_aligned(
+                    canvas, pos_x + 9, pos_y + (int32_t)height / 2 + 1, AlignCenter, AlignBottom, "T");
+
+                canvas_draw_rframe(canvas, 0, 0, 128, 18, 3);
+                canvas_draw_line(canvas, 60, 18, 64, 26);
+                canvas_draw_line(canvas, 64, 26, 68, 18);
+                canvas_set_color(canvas, ColorWhite);
+                canvas_draw_line(canvas, 60, 17, 68, 17);
+                canvas_draw_box(canvas, 62, 21, 5, 2);
+                canvas_set_color(canvas, ColorBlack);
+
+                canvas_set_font(canvas, FontPrimary);
+                size_t scroll_counter = menu_scroll_counter(model, true);
+                elements_scrollable_text_line_str(
+                    canvas,
+                    (uint8_t)pos_x,
+                    (uint8_t)(pos_y - (int32_t)height / 2 - 8),
+                    124,
+                    menu_fox_label(item->label),
+                    scroll_counter,
+                    false,
+                    true);
+            } else {
+                pos_x += (int32_t)(width + 6) * i;
+                pos_y += 2;
+                elements_slightly_rounded_frame(
+                    canvas, pos_x - (int32_t)width / 2, pos_y - (int32_t)height / 2, width, height);
+            }
+            menu_centered_icon(canvas, item, pos_x - 7, pos_y - 7, 14, 14);
+        }
+        elements_scrollbar_horizontal(canvas, 0, 64, 128, position, items_count);
+    } else if(theme == 4) {
+        // "Tiny" - 5x3 icon-only grid (15 cells visible at once). The
+        // selected item's name is shown as a scrolling line top-left
+        // instead of per-cell labels; everything else is icon-only, with
+        // a plain frame marking the selected cell.
+        MenuItem* selected = MenuItemArray_get(model->items, position);
+        canvas_set_font(canvas, FontSecondary);
+        size_t scroll_counter = menu_scroll_counter(model, true);
+        elements_scrollable_text_line_str(
+            canvas, 1, 8, 126, menu_fox_label(selected->label), scroll_counter, false, false);
+
+        size_t shift = tiny_shift(position, items_count);
+        for(uint8_t cell = 0; cell < TINY_VISIBLE; cell++) {
+            size_t item_idx = shift + cell;
+            if(item_idx >= items_count) break;
+
+            uint8_t col = cell / TINY_ROWS;
+            uint8_t row = cell % TINY_ROWS;
+            int32_t x   = col * (TINY_CELL_W + TINY_GAP);
+            int32_t y   = TINY_HEADER_H + row * (TINY_CELL_H + TINY_GAP);
+
+            MenuItem* item = MenuItemArray_get(model->items, item_idx);
+            if(item_idx == position) {
+                canvas_draw_frame(canvas, x, y, TINY_CELL_W, TINY_CELL_H);
+            }
+            menu_centered_icon(canvas, item, x, y, TINY_CELL_W, TINY_CELL_H);
         }
     } else {
             MenuItem* item;
@@ -161,22 +375,33 @@ static bool menu_input_callback(InputEvent* event, void* context) {
     return consumed;
 }
 
+// Drives the Carousel style's selected-label marquee (Momentum's real
+// menu.c runs this unconditionally for every style, not just this one -
+// it's a single periodic timer incrementing a counter, cheap enough not to
+// bother gating).
+static void menu_scroll_timer_callback(void* context) {
+    Menu* menu = context;
+    with_view_model(menu->view, MenuModel* model, { model->scroll_counter++; }, true);
+}
+
 static void menu_enter(void* context) {
     Menu* menu = context;
     with_view_model(menu->view, MenuModel* model, {
         size_t count = MenuItemArray_size(model->items);
         if(count) {
-            if(model->cached_theme == 1) {
-                // Fox grid: all cells are visible simultaneously — start every animation
+            if(model->cached_theme == 1 || model->cached_theme == 4) {
+                // Fox/Tiny grids: all cells are visible simultaneously — start every animation
                 for(size_t i = 0; i < count; i++) {
                     icon_animation_start(MenuItemArray_get(model->items, i)->icon);
                 }
             } else {
-                // Classic: only the selected item is shown centre-screen
+                // Classic/Carousel/Slider: only the selected item is shown/animated
                 icon_animation_start(MenuItemArray_get(model->items, model->position)->icon);
             }
         }
+        model->scroll_counter = 0;
     }, false);
+    furi_timer_start(menu->scroll_timer, 333);
 }
 
 static void menu_exit(void* context) {
@@ -184,8 +409,8 @@ static void menu_exit(void* context) {
     with_view_model(menu->view, MenuModel* model, {
         size_t count = MenuItemArray_size(model->items);
         if(count) {
-            if(model->cached_theme == 1) {
-                // Fox grid: all were started, stop all
+            if(model->cached_theme == 1 || model->cached_theme == 4) {
+                // Fox/Tiny grids: all were started, stop all
                 for(size_t i = 0; i < count; i++) {
                     icon_animation_stop(MenuItemArray_get(model->items, i)->icon);
                 }
@@ -194,6 +419,7 @@ static void menu_exit(void* context) {
             }
         }
     }, false);
+    furi_timer_stop(menu->scroll_timer);
 }
 
 Menu* menu_alloc(void) {
@@ -206,20 +432,17 @@ Menu* menu_alloc(void) {
     view_set_enter_callback(menu->view, menu_enter);
     view_set_exit_callback(menu->view, menu_exit);
 
-    // Load theme before entering with_view_model — furi_record_open inside a locked
-    // view model trips Flipper's lock-ordering furi_check. Load here, pass value in.
-    uint8_t loaded_theme = MenuThemeFox;
-    DesktopSettings* s = malloc(sizeof(DesktopSettings));
-    if(s) {
-        desktop_settings_load(s);
-        loaded_theme = s->menu_theme;
-        free(s);
-    }
+    menu->scroll_timer = furi_timer_alloc(menu_scroll_timer_callback, FuriTimerTypePeriodic, menu);
 
+    // Defaults to Classic - only the loader's primary Apps menu applies the
+    // user's Fox Theme/Carousel choice (via menu_set_theme(), called from
+    // loader_menu.c after alloc). Any other app that pulls in this shared
+    // Menu widget for its own internal menu stays plain Classic regardless
+    // of that global setting.
     with_view_model(menu->view, MenuModel* model, {
         MenuItemArray_init(model->items);
         model->position = 0;
-        model->cached_theme = loaded_theme;
+        model->cached_theme = MenuThemeClassic;
     }, true);
 
     return menu;
@@ -232,6 +455,7 @@ void menu_free(Menu* menu) {
         MenuItemArray_clear(model->items);
     }, false);
     view_free(menu->view);
+    furi_timer_free(menu->scroll_timer);
     free(menu);
 }
 
@@ -292,13 +516,14 @@ static void menu_change_position(Menu* menu, size_t new_pos) {
     with_view_model(menu->view, MenuModel* model, {
         size_t count = MenuItemArray_size(model->items);
         if(count > 0) {
-            if(model->cached_theme != 1) {
-                // Classic: only one animation runs at a time — swap selected item
+            bool grid_theme = (model->cached_theme == 1 || model->cached_theme == 4);
+            if(!grid_theme) {
+                // Classic/Carousel/Slider: only one animation runs at a time — swap selected item
                 icon_animation_stop(MenuItemArray_get(model->items, model->position)->icon);
             }
-            // Fox: all animations are already running, just update selection
+            // Fox/Tiny: all animations are already running, just update selection
             model->position = new_pos % count;
-            if(model->cached_theme != 1) {
+            if(!grid_theme) {
                 icon_animation_start(MenuItemArray_get(model->items, model->position)->icon);
             }
         }
@@ -314,12 +539,22 @@ static void menu_process_up(Menu* menu) {
         theme = model->cached_theme;
     }, false);
     if(!count) return;
+    // Carousel and Slider are single rows - Up/Down don't apply, only Left/Right.
+    if(theme == 2 || theme == 3) return;
 
     size_t new_pos;
     if(theme == 1) {
         // Toggle row within column (even = top, odd = bottom)
         new_pos = (pos % FOX_ROWS == 0) ?
             ((pos + 1 < count) ? pos + 1 : pos) : pos - 1;
+    } else if(theme == 4) {
+        size_t row = pos % TINY_ROWS;
+        if(row > 0) {
+            new_pos = pos - 1;
+        } else {
+            size_t col = pos / TINY_ROWS;
+            new_pos = col * TINY_ROWS + tiny_last_row_in_col(col, count);
+        }
     } else {
         new_pos = (pos > 0) ? pos - 1 : count - 1;
     }
@@ -335,11 +570,18 @@ static void menu_process_down(Menu* menu) {
         theme = model->cached_theme;
     }, false);
     if(!count) return;
+    // Carousel and Slider are single rows - Up/Down don't apply, only Left/Right.
+    if(theme == 2 || theme == 3) return;
 
     size_t new_pos;
     if(theme == 1) {
         new_pos = (pos % FOX_ROWS == 0) ?
             ((pos + 1 < count) ? pos + 1 : pos) : pos - 1;
+    } else if(theme == 4) {
+        size_t row = pos % TINY_ROWS;
+        size_t col = pos / TINY_ROWS;
+        size_t last_row = tiny_last_row_in_col(col, count);
+        new_pos = (row < last_row) ? pos + 1 : col * TINY_ROWS;
     } else {
         new_pos = (pos + 1 < count) ? pos + 1 : 0;
     }
@@ -365,6 +607,14 @@ static void menu_process_left(Menu* menu) {
             new_pos = last_col_start + (pos % FOX_ROWS);
             if(new_pos >= count) new_pos = last_col_start;
         }
+    } else if(theme == 4) {
+        if(pos >= TINY_ROWS) {
+            new_pos = pos - TINY_ROWS;
+        } else {
+            size_t last_col_start = ((count - 1) / TINY_ROWS) * TINY_ROWS;
+            new_pos = last_col_start + (pos % TINY_ROWS);
+            if(new_pos >= count) new_pos = last_col_start;
+        }
     } else {
         new_pos = (pos > 0) ? pos - 1 : count - 1;
     }
@@ -385,6 +635,9 @@ static void menu_process_right(Menu* menu) {
     if(theme == 1) {
         size_t candidate = pos + FOX_ROWS;
         new_pos = (candidate < count) ? candidate : (pos % FOX_ROWS);
+    } else if(theme == 4) {
+        size_t candidate = pos + TINY_ROWS;
+        new_pos = (candidate < count) ? candidate : (pos % TINY_ROWS);
     } else {
         new_pos = (pos + 1 < count) ? pos + 1 : 0;
     }

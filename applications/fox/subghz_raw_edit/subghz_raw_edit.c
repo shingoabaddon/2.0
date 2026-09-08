@@ -13,6 +13,7 @@
 #include <lib/flipper_format/flipper_format.h>
 #include <lib/subghz/environment.h>
 #include <lib/subghz/transmitter.h>
+#include <lib/subghz/subghz_protocol_registry.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -471,14 +472,155 @@ static void *safe_realloc(void *ptr, size_t size)
     return realloc(ptr, size);
 }
 
+/* Decoded protocols are synthesized by the firmware's own SubGhz encoder: the
+ * key file is deserialized into a transmitter and we collect the level/duration
+ * upload it would send on air. Every protocol the firmware supports works with
+ * no per-protocol code here. Rolling codes (KeeLoq, Nice Flor-S, ...) increment
+ * and re-encrypt their counter inside the encoder, so the synthesized frame is
+ * the NEXT counter value, not a byte-for-byte replay; the manufacturer keystores
+ * (system + user) are loaded so that encryption works. */
+
+static SubGhzEnvironment *subghz_env_setup(void)
+{
+    SubGhzEnvironment *env = subghz_environment_alloc();
+    if (!env)
+        return NULL;
+
+    subghz_environment_set_protocol_registry(env, (void *)&subghz_protocol_registry);
+
+    subghz_environment_set_came_atomo_rainbow_table_file_name(
+        env, "/ext/subghz/assets/came_atomo");
+    subghz_environment_set_alutech_at_4n_rainbow_table_file_name(
+        env, "/ext/subghz/assets/alutech_at_4n");
+    subghz_environment_set_nice_flor_s_rainbow_table_file_name(
+        env, "/ext/subghz/assets/nice_flor_s");
+
+    return env;
+}
+
+static bool synth_grow(SubData *sd, size_t need)
+{
+    if (sd->cap >= need)
+        return true;
+
+    size_t ncap = sd->cap ? sd->cap : 256;
+    while (ncap < need)
+        ncap *= 2;
+
+    if (ncap > MAX_SAMPLES)
+        ncap = MAX_SAMPLES;
+
+    if (ncap < need)
+        return false;
+
+    int16_t *grown = safe_realloc(sd->data, ncap * sizeof(int16_t));
+    if (!grown)
+    {
+        sd->out_of_memory = true;
+        return false;
+    }
+
+    sd->data = grown;
+    sd->cap = ncap;
+    return true;
+}
+
 static bool synthesize_via_transmitter(
     Storage *storage, const char *path, const char *protocol, SubData *sd)
 {
-    UNUSED(storage);
-    UNUSED(path);
-    UNUSED(protocol);
-    UNUSED(sd);
-    return false;
+    if (!protocol[0])
+        return false;
+
+    SubGhzEnvironment *env = subghz_env_setup();
+    if (!env)
+        return false;
+
+    if (strstr(protocol, "KeeLoq"))
+    {
+        subghz_environment_load_keystore(env, "/ext/subghz/assets/keeloq_mfcodes");
+        subghz_environment_load_keystore(env, "/ext/subghz/assets/keeloq_mfcodes_user");
+    }
+
+    FlipperFormat *fff = flipper_format_file_alloc(storage);
+    SubGhzTransmitter *tx = NULL;
+    bool ok = false;
+
+    do
+    {
+        if (!flipper_format_file_open_existing(fff, path))
+            break;
+
+        tx = subghz_transmitter_alloc_init(env, protocol);
+        if (!tx)
+            break;
+
+        if (subghz_transmitter_deserialize(tx, fff) != SubGhzProtocolStatusOk)
+            break;
+
+        sd->count = 0;
+        for (;;)
+        {
+            LevelDuration ld = subghz_transmitter_yield(tx);
+            if (level_duration_is_reset(ld))
+                break;
+
+            int32_t dur = (int32_t)level_duration_get_duration(ld);
+            int32_t v = level_duration_get_level(ld) ? dur : -dur;
+
+            if (!synth_grow(sd, sd->count + 1))
+            {
+                sd->truncated = true;
+                break;
+            }
+
+            append_sample(sd, v);
+
+            if (sd->count >= SYNTH_YIELD_CAP)
+                break;
+        }
+
+        /* The encoder repeats the same upload `repeat` times. Find the true
+         * period P (smallest P for which the whole buffer is P-periodic - this
+         * rejects the short sub-period of a repetitive preamble like KeeLoq's,
+         * unlike a header-only match) and keep ONE period plus the next frame's
+         * header as its trailing sync. Without this, N duplicates bloat the
+         * buffer and OOM on large frames (e.g. Nice Flor-S). */
+        size_t n = sd->count;
+        for (size_t p = 4; p * 2 <= n; p++)
+        {
+            bool periodic = true;
+            for (size_t i = p; i < n; i++)
+            {
+                if (sd->data[i] != sd->data[i - p])
+                {
+                    periodic = false;
+                    break;
+                }
+            }
+
+            if (periodic)
+            {
+                /* Keep one period. Append the next frame's first sample as a
+                 * trailing delimiter only when it is a gap (gap-first protocols
+                 * like Dooya/CAME, whose period otherwise ends on a pulse and
+                 * leaves the last bit unframed). Pulse-first protocols (KeeLoq)
+                 * already end the period on their inter-frame guard gap, so
+                 * appending data[p] there would dangle a stray pulse. */
+                sd->count = (sd->data[p] < 0) ? p + 1 : p;
+                break;
+            }
+        }
+
+        ok = sd->count > 0;
+    } while (0);
+
+    if (tx)
+        subghz_transmitter_free(tx);
+
+    flipper_format_file_close(fff);
+    flipper_format_free(fff);
+    subghz_environment_free(env);
+    return ok;
 }
 
 static bool g_normalize_jitter = false;

@@ -123,6 +123,8 @@ FIRMWARE_APPS = {
         "system_apps",
         # Settings
         "settings_apps",
+        # Fox custom apps promoted into the main menu (e.g. FoxHub)
+        "foxapps",
     ],
     "unit_tests": [
         "basic_services",

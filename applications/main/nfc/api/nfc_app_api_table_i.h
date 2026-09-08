@@ -41,4 +41,34 @@ static constexpr auto nfc_app_api_table = sort(create_array_t<sym_entry>(
         bool,
         (NfcApp * instance, SceneManagerEvent event)),
     API_METHOD(nfc_unlock_helper_setup_from_state, void, (NfcApp * instance)),
-    API_METHOD(nfc_unlock_helper_card_detected_handler, void, (NfcApp * instance))));
+    API_METHOD(nfc_unlock_helper_card_detected_handler, void, (NfcApp * instance)),
+    API_METHOD(nfc_blink_read_start, void, (NfcApp * nfc)),
+    API_METHOD(nfc_blink_emulate_start, void, (NfcApp * nfc)),
+    API_METHOD(nfc_blink_stop, void, (NfcApp * nfc)),
+    API_METHOD(nfc_save_shadow_file, bool, (NfcApp * instance)),
+    API_METHOD(dict_attack_reset, void, (DictAttack * instance)),
+    API_METHOD(
+        dict_attack_set_callback,
+        void,
+        (DictAttack * instance, DictAttackCallback callback, void* context)),
+    API_METHOD(dict_attack_set_header, void, (DictAttack * instance, const char* header)),
+    API_METHOD(dict_attack_set_card_state, void, (DictAttack * instance, bool detected)),
+    API_METHOD(
+        dict_attack_set_sectors_total,
+        void,
+        (DictAttack * instance, uint8_t sectors_total)),
+    API_METHOD(dict_attack_set_sectors_read, void, (DictAttack * instance, uint8_t sectors_read)),
+    API_METHOD(dict_attack_set_keys_found, void, (DictAttack * instance, uint8_t keys_found)),
+    API_METHOD(
+        dict_attack_set_current_sector,
+        void,
+        (DictAttack * instance, uint8_t curr_sec)),
+    API_METHOD(
+        dict_attack_set_total_dict_keys,
+        void,
+        (DictAttack * instance, size_t dict_keys_total)),
+    API_METHOD(
+        dict_attack_set_current_dict_key,
+        void,
+        (DictAttack * instance, size_t cur_key_num)),
+    API_METHOD(dict_attack_set_type, void, (DictAttack * instance, DictAttackType type))));

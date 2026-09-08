@@ -5,7 +5,7 @@ App(
     targets=["f7"],
     entry_point="ibutton_app",
     icon="A_iButton_14",
-    stack_size=2 * 1024,
+    stack_size=4 * 1024,
     order= 40,
     fap_libs=["assets"],
     fap_icon="icon.png",

@@ -1,6 +1,5 @@
 #include "desktop_settings_view_pin_setup_howto.h"
 #include <gui/canvas.h>
-#include <assets_icons.h>
 #include "desktop_settings_icons.h"
 #include <furi.h>
 

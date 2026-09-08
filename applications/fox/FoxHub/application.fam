@@ -1,0 +1,14 @@
+App(
+    appid="foxhub",
+    name="FoxHub",
+    apptype=FlipperAppType.MENUEXTERNAL,
+    entry_point="foxhub_main",
+    stack_size=8 * 1024,
+    fap_category="Fox/ESP32",
+    fap_version="0.1",
+    fap_author="FoxFW",
+    order=999,
+    fap_icon="icon.png",
+    fap_icon_assets="images",
+    fap_description="FoxHub - talks to an ESP32 running Fox ESP32 Firmware (WiFi/BLE/HTTP/scripting toolkit)",
+)

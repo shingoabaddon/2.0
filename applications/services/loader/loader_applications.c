@@ -15,7 +15,7 @@
 /* See loader.c for why this only clears the stale spinner and logs, rather
  * than killing/retrying a load: the blocking storage read has no safe
  * cancellation point from another thread. */
-#define LOADER_APPLICATIONS_WATCHDOG_TIMEOUT_MS 5000
+#define LOADER_APPLICATIONS_WATCHDOG_TIMEOUT_MS 7000
 
 struct LoaderApplications {
     FuriThread* thread;

@@ -1,6 +1,7 @@
 #include "../subghz_i.h"
 
 #include <lib/subghz/blocks/custom_btn.h>
+#include <flipper_format/flipper_format_i.h>
 
 #include "applications/main/subghz/helpers/subghz_txrx_i.h"
 #include <lib/subghz/blocks/generic.h>
@@ -20,6 +21,9 @@ void subghz_scene_receiver_info_callback(GuiButtonType result, InputType type, v
     } else if((result == GuiButtonTypeRight) && (type == InputTypeShort)) {
         view_dispatcher_send_custom_event(
             subghz->view_dispatcher, SubGhzCustomEventSceneReceiverInfoSave);
+    } else if((result == GuiButtonTypeLeft) && (type == InputTypeShort)) {
+        view_dispatcher_send_custom_event(
+            subghz->view_dispatcher, SubGhzCustomEventSceneReceiverInfoTxFull);
     }
 }
 
@@ -101,6 +105,12 @@ void subghz_scene_receiver_info_draw_widget(SubGhz* subghz) {
                 "Send",
                 subghz_scene_receiver_info_callback,
                 subghz);
+            widget_add_button_element(
+                subghz->widget,
+                GuiButtonTypeLeft,
+                "Full",
+                subghz_scene_receiver_info_callback,
+                subghz);
         }
     } else {
         // [NO_DOLPHIN] widget_add_icon_element(subghz->widget, 83, 22, &I_WarningDolphinFlip_45x42);
@@ -175,6 +185,27 @@ bool subghz_scene_receiver_info_on_event(void* context, SceneManagerEvent event)
                 subghz->save_datetime_set = true;
                 scene_manager_next_scene(subghz->scene_manager, SubGhzSceneSaveName);
             }
+            return true;
+        } else if(event.event == SubGhzCustomEventSceneReceiverInfoTxFull) {
+            // Jump straight to the full Transmitter scene off the decoded-but-unsaved
+            // history entry - same signal Save would use, but no save step required.
+            if(!subghz_scene_receiver_info_update_parser(subghz)) {
+                return false;
+            }
+
+            FlipperFormat* fff_history =
+                subghz_history_get_raw_data(subghz->history, subghz->idx_menu_chosen);
+            FlipperFormat* fff_data = subghz_txrx_get_fff_data(subghz->txrx);
+
+            Stream* src = flipper_format_get_raw_stream(fff_history);
+            Stream* dst = flipper_format_get_raw_stream(fff_data);
+
+            stream_seek(src, 0, StreamOffsetFromStart);
+            stream_clean(dst);
+            stream_copy_full(src, dst);
+            stream_seek(dst, 0, StreamOffsetFromStart);
+
+            scene_manager_next_scene(subghz->scene_manager, SubGhzSceneTransmitter);
             return true;
         }
     } else if(event.type == SceneManagerEventTypeTick) {

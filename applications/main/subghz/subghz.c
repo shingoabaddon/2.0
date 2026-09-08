@@ -10,6 +10,12 @@
 
 #define TAG "SubGhzApp"
 
+static bool subghz_protocol_enabled_callback(void* context, size_t registry_index, const char* protocol_name) {
+    UNUSED(protocol_name);
+    SubGhz* subghz = context;
+    return subghz_protocol_filter_is_enabled(subghz->protocol_filter, registry_index);
+}
+
 bool subghz_custom_event_callback(void* context, uint32_t event) {
     furi_assert(context);
     SubGhz* subghz = context;
@@ -164,6 +170,13 @@ SubGhz* subghz_alloc(bool alloc_for_tx_only) {
             SubGhzViewIdByteInput,
             byte_input_get_view(subghz->byte_input));
 
+        // Number Input
+        subghz->number_input = number_input_alloc();
+        view_dispatcher_add_view(
+            subghz->view_dispatcher,
+            SubGhzViewIdNumberInput,
+            number_input_get_view(subghz->number_input));
+
         // Custom Widget
         subghz->widget = widget_alloc();
         view_dispatcher_add_view(
@@ -207,6 +220,12 @@ SubGhz* subghz_alloc(bool alloc_for_tx_only) {
         SubGhzViewIdStartGrid,
         subghz_start_grid_get_view(subghz->start_grid));
 
+    subghz->mode_picker = subghz_mode_picker_alloc();
+    view_dispatcher_add_view(
+        subghz->view_dispatcher,
+        SubGhzViewIdModePicker,
+        subghz_mode_picker_get_view(subghz->mode_picker));
+
     subghz->subghz_psa_decrypt = subghz_view_psa_decrypt_alloc();
     view_dispatcher_add_view(
         subghz->view_dispatcher,
@@ -218,6 +237,12 @@ SubGhz* subghz_alloc(bool alloc_for_tx_only) {
         subghz->view_dispatcher,
         SubGhzViewIdKeeloqDecrypt,
         subghz_view_keeloq_decrypt_get_view(subghz->subghz_keeloq_decrypt));
+
+    subghz->subghz_fiat_v1_recover = subghz_view_fiat_v1_recover_alloc();
+    view_dispatcher_add_view(
+        subghz->view_dispatcher,
+        SubGhzViewIdFiatV1Recover,
+        subghz_view_fiat_v1_recover_get_view(subghz->subghz_fiat_v1_recover));
 
     //init threshold rssi
     subghz->threshold_rssi = subghz_threshold_rssi_alloc();
@@ -244,9 +269,14 @@ SubGhz* subghz_alloc(bool alloc_for_tx_only) {
             subghz->last_settings->mod_filter_data,
             sizeof(subghz->last_settings->mod_filter_data));
     }
+    subghz_txrx_set_protocol_enabled_callback(
+        subghz->txrx, subghz_protocol_enabled_callback, subghz);
 
     // Set LED and Amp GPIO control state
     furi_hal_subghz_set_ext_leds_and_amp(subghz->last_settings->leds_and_amp);
+
+    // Crystal calibration offset
+    subghz_txrx_set_frequency_offset(subghz->txrx, subghz->last_settings->frequency_offset);
 
     if(!alloc_for_tx_only) {
         subghz_txrx_set_preset_internal(
@@ -318,6 +348,10 @@ void subghz_free(SubGhz* subghz, bool alloc_for_tx_only) {
         view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdByteInput);
         byte_input_free(subghz->byte_input);
 
+        // NumberInput
+        view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdNumberInput);
+        number_input_free(subghz->number_input);
+
         // Custom Widget
         view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdWidget);
         widget_free(subghz->widget);
@@ -345,10 +379,16 @@ void subghz_free(SubGhz* subghz, bool alloc_for_tx_only) {
     view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdKeeloqDecrypt);
     subghz_view_keeloq_decrypt_free(subghz->subghz_keeloq_decrypt);
 
+    // Fiat V1 Recover
+    view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdFiatV1Recover);
+    subghz_view_fiat_v1_recover_free(subghz->subghz_fiat_v1_recover);
+
     // Read RAW
     view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdReadRAW);
     view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdStartGrid);
     subghz_start_grid_free(subghz->start_grid);
+    view_dispatcher_remove_view(subghz->view_dispatcher, SubGhzViewIdModePicker);
+    subghz_mode_picker_free(subghz->mode_picker);
     subghz_read_raw_free(subghz->subghz_read_raw);
     if(!alloc_for_tx_only) {
         // Submenu
@@ -459,6 +499,9 @@ int32_t subghz_app(void* p) {
     uint32_t menu_focus_index = 0; /* 0 = no focus override */
     bool focus_file_existed = false;
     char focus_menu_content[16] = {0};
+    bool return_to_mode_picker_garage = false;
+    bool return_to_mode_picker_tpms = false;
+    bool return_to_mode_picker_jammer = false;
 
     if(!p || strlen((const char*)p) == 0) {
         Storage* storage = furi_record_open(RECORD_STORAGE);
@@ -477,7 +520,20 @@ int32_t subghz_app(void* p) {
                 } else if(strcmp(buf, "menu:gdr") == 0) {
                     menu_focus_index = SubmenuIndexGarageDoorRemote;
                 } else if(strcmp(buf, "menu:jammer") == 0) {
-                    menu_focus_index = SubmenuIndexRFJammer;
+                    /* RF Jammer is now a Mode Picker row, not a Start-grid
+                     * one - reopen the Mode Picker with it pre-selected,
+                     * same as Garage's/TPMS's markers below. */
+                    return_to_mode_picker_jammer = true;
+                } else if(strcmp(buf, "menu:tpms") == 0) {
+                    /* TPMS Reader is now a Mode Picker row, not a Start-grid
+                     * one - reopen the Mode Picker with it pre-selected,
+                     * same as Garage's "menu:garage" marker below. */
+                    return_to_mode_picker_tpms = true;
+                } else if(strcmp(buf, "menu:garage") == 0) {
+                    /* Garage's Start scene wrote this before relaunching us
+                     * on Back - reopen the Mode Picker with Garage
+                     * pre-selected instead of defaulting to Automotive. */
+                    return_to_mode_picker_garage = true;
                 } else if(strcmp(buf, "read") == 0) {
                     /* FA/MA OK result: open the Receiver directly. */
                     static const char read_arg[] = "read";
@@ -641,7 +697,19 @@ int32_t subghz_app(void* p) {
             subghz->view_dispatcher, subghz->gui, ViewDispatcherTypeFullscreen);
         furi_string_set(subghz->file_path, SUBGHZ_APP_FOLDER);
         if(subghz_txrx_is_database_loaded(subghz->txrx)) {
-            scene_manager_next_scene(subghz->scene_manager, SubGhzSceneStart);
+            /* Fresh launch, no deep-link argument — show the Automotive /
+             * Garage-Gate-Other mode picker first. */
+            if(return_to_mode_picker_garage) {
+                scene_manager_set_scene_state(
+                    subghz->scene_manager, SubGhzSceneModePicker, SUBGHZ_MODE_PICKER_GARAGE);
+            } else if(return_to_mode_picker_jammer) {
+                scene_manager_set_scene_state(
+                    subghz->scene_manager, SubGhzSceneModePicker, SUBGHZ_MODE_PICKER_JAMMER);
+            } else if(return_to_mode_picker_tpms) {
+                scene_manager_set_scene_state(
+                    subghz->scene_manager, SubGhzSceneModePicker, SUBGHZ_MODE_PICKER_TPMS);
+            }
+            scene_manager_next_scene(subghz->scene_manager, SubGhzSceneModePicker);
         } else {
             scene_manager_set_scene_state(
                 subghz->scene_manager, SubGhzSceneShowError, SubGhzCustomEventManagerSet);

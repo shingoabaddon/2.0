@@ -11,13 +11,13 @@
 
 typedef enum {
     DesktopSettingsPinSetup           = 0,
-    DesktopSettingsWallpaper          = 1,
-    DesktopSettingsChangeName         = 2,
-    DesktopSettingsMainMenu           = 3,
-    DesktopSettingsAlarmClock         = 4,
-    DesktopSettingsRgbBacklight       = 5,
-    DesktopSettingsVgmOptions         = 6,
-    DesktopSettingsMenuStyle          = 7,
+    DesktopSettingsMenuStyle          = 1,
+    DesktopSettingsWallpaper          = 2,
+    DesktopSettingsChangeName         = 3,
+    DesktopSettingsMainMenu           = 4,
+    DesktopSettingsAlarmClock         = 5,
+    DesktopSettingsRgbBacklight       = 6,
+    DesktopSettingsVgmOptions         = 7,
     /* 8 = Battery View (inline callback, no sub-scene) */
     /* 9 = Show Clock (inline callback, no sub-scene) */
     /* 10 = Midnight Format (inline callback, no sub-scene) */
@@ -41,12 +41,13 @@ typedef enum {
 static const char* const clock_enable_text[CLOCK_ENABLE_COUNT]  = {"OFF", "ON"};
 static const uint32_t    clock_enable_value[CLOCK_ENABLE_COUNT] = {0, 1};
 
-/* wifi_icon_hidden: 0 = show (ON), 1 = hide (OFF) — index maps directly */
+/* wifi_icon_hidden: 0 = show (ON), 1 = hide (OFF) — index maps directly.
+ * Same viewport/setting now covers both the WiFi and CC1101 status icons -
+ * whichever one currently applies shows there, see
+ * desktop_wifi_icon_draw_callback() in desktop.c - so this one toggle hides
+ * or shows both. */
 #define WIFI_ICON_COUNT 2
 static const char* const wifi_icon_text[WIFI_ICON_COUNT] = {"ON", "OFF"};
-
-#define MENU_STYLE_COUNT 2
-static const char* const menu_style_text[MENU_STYLE_COUNT] = {"Classic", "Default"};
 
 #define STATUSBAR_ICONS_COUNT 2
 static const char* const statusbar_icons_text[STATUSBAR_ICONS_COUNT] = {"OFF", "ON"};
@@ -66,16 +67,6 @@ static CliSettings s_cli_settings;
 #define GPIO_PINS_COUNT 2
 static const char* const gpio_pins_text[GPIO_PINS_COUNT] = {"13/14", "15/16"};
 static GpioRemapSettings s_gpio_remap;
-
-static void desktop_settings_scene_start_menu_style_changed(VariableItem* item) {
-    DesktopSettingsApp* app = variable_item_get_context(item);
-    uint8_t index = variable_item_get_current_value_index(item);
-    variable_item_set_current_value_text(item, menu_style_text[index]);
-    app->settings.menu_theme = index;
-    /* Update g_fox_theme immediately so all GUI modules (submenu borders,
-     * menu grid layout) reflect the change on their very next draw call. */
-    fox_theme_set(index == 1);
-}
 
 #define BATTERY_VIEW_COUNT 6
 static const char* const battery_view_text[BATTERY_VIEW_COUNT] =
@@ -150,23 +141,23 @@ void desktop_settings_scene_start_on_enter(void* context) {
     VariableItem* item;
     uint8_t value_index;
 
+    /* Keep app->settings.menu_theme in sync with fox_theme's own live style
+     * so this scene's on_exit re-applies the right one even if the Menu
+     * Style sub-scene was never opened this session. */
+    {
+        uint8_t ms_idx = fox_theme_get_style();
+        if(ms_idx > 4) ms_idx = 0;
+        app->settings.menu_theme = ms_idx;
+    }
+
     variable_item_list_add(list, "Security & Privacy", 0, NULL, NULL);
+    variable_item_list_add(list, "Menu Style", 0, NULL, NULL);
     variable_item_list_add(list, "Custom Wallpaper", 0, NULL, NULL);
     variable_item_list_add(list, "Change Flipper Name", 0, NULL, app);
     variable_item_list_add(list, "Main Menu Apps", 0, NULL, NULL);
     variable_item_list_add(list, "Alarm Clock", 0, NULL, NULL);
     variable_item_list_add(list, "RGB Backlight", 0, NULL, NULL);
     variable_item_list_add(list, "VGM Options", 0, NULL, NULL);
-
-    item = variable_item_list_add(
-        list, "Menu Style", MENU_STYLE_COUNT,
-        desktop_settings_scene_start_menu_style_changed, app);
-    {
-        uint8_t ms_idx = fox_theme_is_active() ? 1u : 0u;
-        app->settings.menu_theme = ms_idx;
-        variable_item_set_current_value_index(item, ms_idx);
-        variable_item_set_current_value_text(item, menu_style_text[ms_idx]);
-    }
 
     item = variable_item_list_add(
         list, "Battery View", BATTERY_VIEW_COUNT,
@@ -192,7 +183,7 @@ void desktop_settings_scene_start_on_enter(void* context) {
         item, midnight_format_text[app->settings.clock_midnight_zero]);
 
     item = variable_item_list_add(
-        list, "WiFi Status Icon", WIFI_ICON_COUNT,
+        list, "WiFi/CC1101 Icon", WIFI_ICON_COUNT,
         desktop_settings_scene_start_wifi_icon_changed, app);
     variable_item_set_current_value_index(item, app->settings.wifi_icon_hidden);
     variable_item_set_current_value_text(item, wifi_icon_text[app->settings.wifi_icon_hidden]);
@@ -253,6 +244,9 @@ bool desktop_settings_scene_start_on_event(void* context, SceneManagerEvent even
         case DesktopSettingsPinSetup:
             scene_manager_next_scene(app->scene_manager, DesktopSettingsAppScenePinMenu);
             break;
+        case DesktopSettingsMenuStyle:
+            scene_manager_next_scene(app->scene_manager, DesktopSettingsAppSceneMenuStyle);
+            break;
         case DesktopSettingsWallpaper:
             scene_manager_next_scene(app->scene_manager, DesktopSettingsAppSceneWallpaperSetup);
             break;
@@ -270,8 +264,6 @@ bool desktop_settings_scene_start_on_event(void* context, SceneManagerEvent even
             break;
         case DesktopSettingsVgmOptions:
             scene_manager_next_scene(app->scene_manager, DesktopSettingsAppSceneVgmOptions);
-            break;
-        case DesktopSettingsMenuStyle:
             break;
         case DesktopSettingsFavoriteLeftShort:
             scene_manager_set_scene_state(
@@ -309,5 +301,5 @@ void desktop_settings_scene_start_on_exit(void* context) {
     DesktopSettingsApp* app = context;
     variable_item_list_reset(app->variable_item_list);
     desktop_settings_save(&app->settings);
-    fox_theme_set(app->settings.menu_theme == 1);
+    fox_theme_set_style(app->settings.menu_theme);
 }

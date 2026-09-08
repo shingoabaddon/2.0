@@ -34,6 +34,17 @@ void variable_item_list_free(VariableItemList* variable_item_list);
  */
 void variable_item_list_reset(VariableItemList* variable_item_list);
 
+/** Pre-allocate capacity for a known number of items before adding them.
+ * Calling this before the first variable_item_list_add() avoids any
+ * reallocation of the underlying item array while items are being added,
+ * which would otherwise invalidate pointers already returned by
+ * variable_item_list_add().
+ *
+ * @param      variable_item_list  VariableItemList instance
+ * @param      count               number of items that will be added
+ */
+void variable_item_list_reserve(VariableItemList* variable_item_list, size_t count);
+
 /** Get VariableItemList View instance
  *
  * @param      variable_item_list  VariableItemList instance

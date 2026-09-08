@@ -16,6 +16,7 @@ extern const Icon I_btn_keyloqkeys_10x10;
 extern const Icon I_btn_keyloqbf_10x10;
 extern const Icon I_gdr_10x10;
 extern const Icon I_rf_jammer_10x10;
+extern const Icon I_btn_tpms_10x10;
 
 /* Screen layout: two rows visible at a time.
  * y=0..3   up-scroll indicator | y=4..29  top row (BTN_H=26) | y=30..33 gap
@@ -28,7 +29,7 @@ extern const Icon I_rf_jammer_10x10;
 #define ICON_SIZE    10
 #define ICON_PAD_TOP  3   /* px above icon */
 #define ICON_GAP      2   /* px between icon bottom and text */
-#define TEXT_Y_OFF   21   /* offset from screen_y to text centre */
+#define TEXT_Y_OFF   21   /* offset from screen_y to text center */
 
 #define LX  1
 #define LW  61
@@ -50,22 +51,27 @@ typedef struct {
 
 static const SubGhzGridBtnDef k_btns[SGRID_BTN_COUNT] = {
  /* col row full  label                  ev   up  dn  lt  rt  icon */
-    {0,  0, false,"Read",               10, {NN,  2, NN,  1}, &I_btn_read_10x10},
-    {1,  0, false,"Saved",              11, {NN,  3,  0, NN}, &I_btn_saved_10x10},
+    {0,  0, false,"Read",               10, {10,  2, NN,  1}, &I_btn_read_10x10},
+    {1,  0, false,"Saved",              11, {11,  3,  0, NN}, &I_btn_saved_10x10},
     {0,  1, false,"Read Raw",           15, { 0,  4, NN,  3}, &I_btn_readraw_10x10},
     {1,  1, false,"Add Manual",         12, { 1,  4,  2, NN}, &I_btn_addmanually_10x10},
     {0,  2, true, "Frequency Analyzer", 13, { 2,  5, NN, NN}, &I_btn_frequencyanalyzer_10x10},
     {0,  3, true, "Modulation Analyzer",14, { 4,  6, NN, NN}, &I_btn_modulationanalyzer_10x10},
     {0,  4, false,"Protocols",          17, { 5, 12, NN,  7}, &I_btn_protocols_10x10},
     {1,  4, false,"Modulations",        18, { 5, 12,  6, NN}, &I_btn_modulation_10x10},
-    {0,  6, true, "Garage Remote",      22, {12,  9, NN, NN}, &I_gdr_10x10},   /* row 6: up←RFJammer, down→RadioSets */
-    {0,  7, true, "Radio Settings",     16, { 8, 10, NN, NN}, &I_btn_radiosettings_10x10}, /* row 7: up←GDR */
-    {0,  8, false,"KeeLoq Keys",        20, { 9, NN, NN, 11}, &I_btn_keyloqkeys_10x10},   /* row 8 */
-    {1,  8, false,"KeeLoq BF",          21, { 9, NN, 10, NN}, &I_btn_keyloqbf_10x10},     /* row 8 */
+    {0,  6, true, "Garage Remote",      22, {12,  9, NN, NN}, &I_gdr_10x10},   /* row 6: up←RFJammer */
+    /* Radio Settings moved to the Mode Picker screen (shared with Garage) -
+     * hidden, not removed, so KeeLoq's indices below don't need
+     * renumbering. Nav still routes through it fine since sgrid_nav()
+     * skips hidden buttons automatically. */
+    {0,  7, true, "Radio Settings",     16, { 8, 10, NN, NN}, &I_btn_radiosettings_10x10},
+    {0,  8, false,"KeeLoq Keys",        20, { 9, 13, NN, 11}, &I_btn_keyloqkeys_10x10},   /* row 8 */
+    {1,  8, false,"KeeLoq BF",          21, { 9, 13, 10, NN}, &I_btn_keyloqbf_10x10},     /* row 8 */
     {0,  5, true, "RF Jammer",          23, { 6,  8, NN, NN}, &I_rf_jammer_10x10},  /* idx 12: row 5, above GDR */
+    {0,  9, true, "TPMS Reader",        24, {10, NN, NN, NN}, &I_btn_tpms_10x10},   /* idx 13: row 9, bottom */
 };
 
-#define TOTAL_ROWS 9
+#define TOTAL_ROWS 10
 
 typedef struct {
     uint8_t selected;
@@ -103,14 +109,14 @@ static void draw_btn(Canvas* canvas, uint8_t idx, uint8_t screen_y,
         canvas_draw_rframe(canvas, x, screen_y, w, BTN_H, BTN_R);
     }
 
-    /* Icon — centred horizontally, padded from top */
+    /* Icon — centered horizontally, padded from top */
     if(b->icon) {
         uint8_t icon_x = x + (w - ICON_SIZE) / 2;
         uint8_t icon_y = screen_y + ICON_PAD_TOP;
         canvas_draw_icon(canvas, icon_x, icon_y, b->icon);
     }
 
-    /* Label — centred below icon */
+    /* Label — centered below icon */
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str_aligned(
         canvas,
@@ -144,6 +150,19 @@ static uint8_t sgrid_nth_visible_row(const bool* vis, uint8_t start_row, uint8_t
                 found++;
                 break;
             }
+        }
+    }
+    return 0xFF;
+}
+
+/* Returns the nearest visible row strictly before before_row, or 0xFF if none.
+ * Used to anchor the display window so a hidden row (e.g. Radio Settings,
+ * RF Jammer when its FAP isn't installed) never ends up picked as the top
+ * row, which would leave the bottom row blank. */
+static uint8_t sgrid_prev_visible_row(const bool* vis, uint8_t before_row) {
+    for(uint8_t r = before_row; r > 0; r--) {
+        for(uint8_t i = 0; i < SGRID_BTN_COUNT; i++) {
+            if(vis[i] && k_btns[i].row == r - 1) return r - 1;
         }
     }
     return 0xFF;
@@ -228,8 +247,10 @@ static bool sgrid_input_cb(InputEvent* event, void* context) {
                     uint8_t r = k_btns[next].row;
                     if(r < m->window_row)
                         m->window_row = r;
-                    else if(r > m->window_row + 1)
-                        m->window_row = r - 1;
+                    else if(r > m->window_row + 1) {
+                        uint8_t prev_vis = sgrid_prev_visible_row(m->visible, r);
+                        m->window_row = (prev_vis != 0xFF) ? prev_vis : r;
+                    }
                     consumed = true;
                 }
             } else if(fire) {
@@ -310,7 +331,12 @@ void subghz_start_grid_set_selected(SubGhzStartGrid* instance,
         {
             m->selected = btn_idx;
             uint8_t r   = k_btns[btn_idx].row;
-            m->window_row = (r + 1 < TOTAL_ROWS) ? r : (r > 0 ? r - 1 : 0);
+            if(sgrid_nth_visible_row(m->visible, r + 1, 0) != 0xFF) {
+                m->window_row = r;
+            } else {
+                uint8_t prev_vis = sgrid_prev_visible_row(m->visible, r);
+                m->window_row = (prev_vis != 0xFF) ? prev_vis : r;
+            }
         },
         false);
 }

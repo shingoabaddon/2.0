@@ -1,38 +1,35 @@
 #include "ford_v2.h"
 #include <furi.h>
 #include <string.h>
-#include <lib/toolbox/manchester_decoder.h>
-#include <lib/toolbox/manchester_encoder.h>
 
-#define FORD_V2_TE_SHORT 200U
-#define FORD_V2_TE_LONG 400U
-#define FORD_V2_TE_DELTA 260U
-#define FORD_V2_INTER_BURST_GAP_US 15000U
-#define FORD_V2_PREAMBLE_MIN 64U
-#define FORD_V2_DATA_BITS 104U
-#define FORD_V2_DATA_BYTES 13U
-#define FORD_V2_SYNC_0 0x7FU
-#define FORD_V2_SYNC_1 0xA7U
-#define FORD_V2_ENC_TE_SHORT 240U
-#define FORD_V2_ENC_PREAMBLE_PAIRS 70U
-#define FORD_V2_ENC_BURST_COUNT 6U
+#define FORD_V2_TE_SHORT               200U
+#define FORD_V2_TE_LONG                400U
+#define FORD_V2_TE_DELTA               260U
+#define FORD_V2_INTER_BURST_GAP_US     15000U
+#define FORD_V2_PREAMBLE_MIN           64U
+#define FORD_V2_DATA_BITS              104U
+#define FORD_V2_DATA_BYTES             13U
+#define FORD_V2_SYNC_0                 0x7FU
+#define FORD_V2_SYNC_1                 0xA7U
+#define FORD_V2_ENC_TE_SHORT           240U
+#define FORD_V2_ENC_PREAMBLE_PAIRS     70U
+#define FORD_V2_ENC_BURST_COUNT        6U
 #define FORD_V2_ENC_INTER_BURST_GAP_US 16000U
-#define FORD_V2_ENC_ALLOC_ELEMS 2600U
-#define FORD_V2_ENC_SEPARATOR_ELEMS 2U
-#define FORD_V2_ENC_PREAMBLE_ELEMS (FORD_V2_ENC_PREAMBLE_PAIRS * 2U)
-#define FORD_V2_ENC_DATA_ELEMS ((FORD_V2_DATA_BITS - 1U) * 2U)
+#define FORD_V2_ENC_SEPARATOR_ELEMS    2U
+#define FORD_V2_ENC_PREAMBLE_ELEMS     (FORD_V2_ENC_PREAMBLE_PAIRS * 2U)
+#define FORD_V2_ENC_DATA_ELEMS         ((FORD_V2_DATA_BITS - 1U) * 2U)
 #define FORD_V2_ENC_BURST_ELEMS \
     (FORD_V2_ENC_PREAMBLE_ELEMS + FORD_V2_ENC_SEPARATOR_ELEMS + FORD_V2_ENC_DATA_ELEMS)
 #define FORD_V2_ENC_UPLOAD_ELEMS \
     (FORD_V2_ENC_BURST_COUNT * FORD_V2_ENC_BURST_ELEMS + (FORD_V2_ENC_BURST_COUNT - 1U))
 #define FORD_V2_ENC_SYNC_LO_US 476U
 
-#define FORD_V2_SYNC_BITS 16U
+#define FORD_V2_SYNC_BITS                  16U
 #define FORD_V2_POST_SYNC_DECODE_COUNT_BIT 16U
-#define FORD_V2_KEY_BYTE_COUNT 8U
-#define FORD_V2_TAIL_RAW_BYTE_COUNT 5U
-#define FORD_V2_PREAMBLE_COUNT_MAX 0xFFFFU
-#define FORD_V2_ENCODER_DEFAULT_REPEAT 10U
+#define FORD_V2_KEY_BYTE_COUNT             8U
+#define FORD_V2_TAIL_RAW_BYTE_COUNT        5U
+#define FORD_V2_PREAMBLE_COUNT_MAX         0xFFFFU
+#define FORD_V2_ENCODER_DEFAULT_REPEAT     10U
 
 static const uint16_t ford_v2_sync_shift16_inv =
     (uint16_t)(~(((uint16_t)FORD_V2_SYNC_0 << 8) | (uint16_t)FORD_V2_SYNC_1));
@@ -99,7 +96,8 @@ static void ford_v2_decoder_reset_state(SubGhzProtocolDecoderFordV2* instance) {
 
     memset(instance->raw_bytes, 0, sizeof(instance->raw_bytes));
 
-    manchester_advance(instance->manchester_state, ManchesterEventReset, &instance->manchester_state, NULL);
+    manchester_advance(
+        instance->manchester_state, ManchesterEventReset, &instance->manchester_state, NULL);
 }
 
 static bool ford_v2_duration_is_short(uint32_t duration) {
@@ -157,8 +155,7 @@ static void ford_v2_decoder_extract_from_raw(SubGhzProtocolDecoderFordV2* instan
 
     instance->generic.btn = k[6];
 
-    instance->counter16 = (uint16_t)((((uint16_t)(k[7] & 0x7FU)) << 9) |
-                                     (((uint16_t)k[8]) << 1) |
+    instance->counter16 = (uint16_t)((((uint16_t)(k[7] & 0x7FU)) << 9) | (((uint16_t)k[8]) << 1) |
                                      ((uint16_t)(k[9] >> 7)));
 
     instance->generic.cnt = instance->counter16;
@@ -225,9 +222,8 @@ static void ford_v2_decoder_sync_enter_data(SubGhzProtocolDecoderFordV2* instanc
     instance->decoder.decode_count_bit = FORD_V2_POST_SYNC_DECODE_COUNT_BIT;
 }
 
-static bool ford_v2_decoder_sync_feed_event(
-    SubGhzProtocolDecoderFordV2* instance,
-    ManchesterEvent event) {
+static bool
+    ford_v2_decoder_sync_feed_event(SubGhzProtocolDecoderFordV2* instance, ManchesterEvent event) {
     bool data_bit;
 
     if(!manchester_advance(
@@ -240,7 +236,8 @@ static bool ford_v2_decoder_sync_feed_event(
         instance->sync_bit_count++;
     }
 
-    return instance->sync_bit_count >= FORD_V2_SYNC_BITS && instance->sync_shift == ford_v2_sync_shift16_inv;
+    return instance->sync_bit_count >= FORD_V2_SYNC_BITS &&
+           instance->sync_shift == ford_v2_sync_shift16_inv;
 }
 
 static void ford_v2_decoder_manchester_feed_event(
@@ -266,8 +263,7 @@ static void ford_v2_decoder_manchester_feed_event(
 
     data_bit = !data_bit;
 
-    instance->decoder.decode_data =
-        (instance->decoder.decode_data << 1) | (data_bit ? 1U : 0U);
+    instance->decoder.decode_data = (instance->decoder.decode_data << 1) | (data_bit ? 1U : 0U);
     instance->decoder.decode_count_bit++;
 
     if((instance->decoder.decode_count_bit & 7U) == 0U) {
@@ -357,7 +353,7 @@ static inline void ford_v2_encoder_add_level(
         uint32_t prev = level_duration_get_duration(instance->encoder.upload[idx - 1]);
         instance->encoder.upload[idx - 1] = level_duration_make(level, prev + duration);
     } else {
-        furi_check(idx < FORD_V2_ENC_ALLOC_ELEMS);
+        furi_check(idx < FORD_V2_ENC_UPLOAD_ELEMS);
         instance->encoder.upload[idx] = level_duration_make(level, duration);
         instance->encoder.size_upload++;
     }
@@ -384,9 +380,8 @@ static void ford_v2_encoder_refresh_data_from_raw(SubGhzProtocolEncoderFordV2* i
     }
 }
 
-static inline void ford_v2_encoder_emit_manchester_bit(
-    SubGhzProtocolEncoderFordV2* instance,
-    bool bit) {
+static inline void
+    ford_v2_encoder_emit_manchester_bit(SubGhzProtocolEncoderFordV2* instance, bool bit) {
     if(bit) {
         ford_v2_encoder_add_level(instance, true, FORD_V2_ENC_TE_SHORT);
         ford_v2_encoder_add_level(instance, false, FORD_V2_ENC_TE_SHORT);
@@ -461,7 +456,8 @@ static SubGhzProtocolStatus ford_v2_encoder_deserialize_read_header(
     return SubGhzProtocolStatusOk;
 }
 
-static SubGhzProtocolStatus ford_v2_encoder_deserialize_validate_and_pack(SubGhzProtocolEncoderFordV2* instance) {
+static SubGhzProtocolStatus
+    ford_v2_encoder_deserialize_validate_and_pack(SubGhzProtocolEncoderFordV2* instance) {
     ford_v2_encoder_rebuild_raw_from_payload(instance);
 
     if(!ford_v2_button_is_valid(instance->raw_bytes[6])) {
@@ -470,10 +466,9 @@ static SubGhzProtocolStatus ford_v2_encoder_deserialize_validate_and_pack(SubGhz
 
     ford_v2_encoder_refresh_data_from_raw(instance);
     instance->generic.btn = instance->raw_bytes[6];
-    instance->generic.serial = ((uint32_t)instance->raw_bytes[2] << 24) |
-                               ((uint32_t)instance->raw_bytes[3] << 16) |
-                               ((uint32_t)instance->raw_bytes[4] << 8) |
-                               (uint32_t)instance->raw_bytes[5];
+    instance->generic.serial =
+        ((uint32_t)instance->raw_bytes[2] << 24) | ((uint32_t)instance->raw_bytes[3] << 16) |
+        ((uint32_t)instance->raw_bytes[4] << 8) | (uint32_t)instance->raw_bytes[5];
     instance->generic.cnt = (uint16_t)((((uint16_t)(instance->raw_bytes[7] & 0x7FU)) << 9) |
                                        (((uint16_t)instance->raw_bytes[8]) << 1) |
                                        ((uint16_t)(instance->raw_bytes[9] >> 7)));
@@ -481,11 +476,13 @@ static SubGhzProtocolStatus ford_v2_encoder_deserialize_validate_and_pack(SubGhz
     return SubGhzProtocolStatusOk;
 }
 
-static void ford_v2_encoder_deserialize_apply_repeat(SubGhzProtocolEncoderFordV2* instance, FlipperFormat* flipper_format) {
+static void ford_v2_encoder_deserialize_apply_repeat(
+    SubGhzProtocolEncoderFordV2* instance,
+    FlipperFormat* flipper_format) {
     flipper_format_rewind(flipper_format);
     uint32_t repeat = FORD_V2_ENCODER_DEFAULT_REPEAT;
     if(flipper_format_read_uint32(flipper_format, "Repeat", &repeat, 1)) {
-        instance->encoder.repeat = repeat;
+        instance->encoder.repeat = (int32_t)repeat;
     }
 }
 
@@ -497,7 +494,7 @@ void* subghz_protocol_encoder_ford_v2_alloc(SubGhzEnvironment* environment) {
     instance->base.protocol = &ford_protocol_v2;
     instance->generic.protocol_name = instance->base.protocol->name;
     instance->encoder.repeat = FORD_V2_ENCODER_DEFAULT_REPEAT;
-    instance->encoder.upload = calloc(FORD_V2_ENC_ALLOC_ELEMS, sizeof(LevelDuration));
+    instance->encoder.upload = calloc(FORD_V2_ENC_UPLOAD_ELEMS, sizeof(LevelDuration));
     furi_check(instance->encoder.upload);
 
     return instance;
@@ -523,7 +520,8 @@ SubGhzProtocolStatus
     FuriString* temp_str = furi_string_alloc();
     furi_check(temp_str);
 
-    SubGhzProtocolStatus ret = ford_v2_encoder_deserialize_read_header(instance, flipper_format, temp_str);
+    SubGhzProtocolStatus ret =
+        ford_v2_encoder_deserialize_read_header(instance, flipper_format, temp_str);
 
     if(ret == SubGhzProtocolStatusOk) {
         ret = ford_v2_encoder_deserialize_validate_and_pack(instance);
@@ -710,17 +708,14 @@ static void ford_v2_decoder_read_tail_raw_if_present(
     }
 }
 
-SubGhzProtocolStatus subghz_protocol_decoder_ford_v2_deserialize(
-    void* context,
-    FlipperFormat* flipper_format) {
+SubGhzProtocolStatus
+    subghz_protocol_decoder_ford_v2_deserialize(void* context, FlipperFormat* flipper_format) {
     furi_check(context);
 
     SubGhzProtocolDecoderFordV2* instance = context;
 
     SubGhzProtocolStatus ret = subghz_block_generic_deserialize_check_count_bit(
-        &instance->generic,
-        flipper_format,
-        subghz_protocol_ford_v2_const.min_count_bit_for_found);
+        &instance->generic, flipper_format, subghz_protocol_ford_v2_const.min_count_bit_for_found);
 
     if(ret != SubGhzProtocolStatusOk) {
         return ret;
@@ -805,10 +800,9 @@ const SubGhzProtocolEncoder subghz_protocol_ford_v2_encoder = {
 const SubGhzProtocol ford_protocol_v2 = {
     .name = FORD_PROTOCOL_V2_NAME,
     .type = SubGhzProtocolTypeDynamic,
-    .flag = SubGhzProtocolFlag_433 | SubGhzProtocolFlag_FM | SubGhzProtocolFlag_Decodable |
-            SubGhzProtocolFlag_Load | SubGhzProtocolFlag_Save
-            | SubGhzProtocolFlag_Send
-    ,
+    .flag = SubGhzProtocolFlag_315 | SubGhzProtocolFlag_433 | SubGhzProtocolFlag_FM |
+            SubGhzProtocolFlag_Decodable | SubGhzProtocolFlag_Load | SubGhzProtocolFlag_Save |
+            SubGhzProtocolFlag_Send,
     .decoder = &subghz_protocol_ford_v2_decoder,
     .encoder = &subghz_protocol_ford_v2_encoder,
 };

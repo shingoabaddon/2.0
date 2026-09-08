@@ -68,23 +68,26 @@ struct Desktop {
     ViewPort* stealth_mode_icon_viewport;
     ViewPort* no_sd_viewport;  // Shown when SD card is ejected mid-session
 
-    // Fox ESP32 WiFi status icon - always visible (unlike lock_icon_viewport,
-    // which toggles on/off), just draws differently connected vs not. The
-    // icon itself always just reads FOX_WIFI_STATUS_PATH on the SD card
-    // every update_wifi_timer tick (cheap, frequent, never contends for the
-    // UART). That file is normally kept fresh by whichever Fox app the user
-    // has open explicitly writing it on connect/disconnect - but nothing
-    // used to notice if it went stale (e.g. the ESP32 got reflashed or
-    // unplugged while no Fox app was open to report it). wifi_recheck_thread
-    // is the fix for that: roughly once a minute, if nothing currently holds
-    // the UART, it briefly borrows it for a real liveness probe and
-    // rewrites the flag file itself. See desktop_wifi_icon_draw_callback()'s
-    // and desktop_wifi_recheck_thread()'s header comments in desktop.c for
-    // the full reasoning on both halves of this.
+    // Fox ESP32 WiFi / CC1101 status icon - always visible (unlike
+    // lock_icon_viewport, which toggles on/off), shows one of three states:
+    // WiFi connected, CC1101 external module connected (only checked/shown
+    // if WiFi isn't), or neither. The icon itself just reads two small flag
+    // files on the SD card every update_wifi_timer tick (cheap, frequent,
+    // never touches the UART or the subghz device registry directly) -
+    // FOX_ESP32_WIFI_STATUS_PATH (kept fresh by whichever Fox ESP32 app the
+    // user has open, or by wifi_recheck_thread below when nothing is) and
+    // CC1101_EXT_STATUS_PATH (kept fresh by wifi_recheck_thread too - see
+    // desktop_cc1101_ext_check() in desktop.c). wifi_recheck_thread runs
+    // both the WiFi UART probe and the CC1101 probe-app launch on the same
+    // cadence (fast once an ESP32's ever answered, slow discovery cadence
+    // until then), and only while nothing else is running and the device
+    // isn't locked - see desktop_wifi_recheck_thread()'s header comment in
+    // desktop.c for the full reasoning.
     ViewPort* wifi_icon_viewport;
     FuriTimer* update_wifi_timer;
     FuriThread* wifi_recheck_thread;
     bool wifi_connected;
+    bool cc1101_connected;
     bool pending_slideshow;  // Set at boot when fox_setup needs to run before the
                               // slideshow; consumed in DesktopGlobalAfterAppFinished
                               // once fox_setup exits — no timer guessing involved.
@@ -129,6 +132,12 @@ struct Desktop {
     bool clock_lock_backlight_manually_off; // Left-arrow override on the Fox
                                              // Clock screen - see
                                              // desktop_scene_clock_lock.c
+
+    // Low-RAM watchdog - see desktop_ram_watchdog_trigger()/_timer_callback()
+    // in desktop.c. Runs regardless of which app is in the foreground or
+    // which desktop scene is active, same as alarm_check_timer above.
+    FuriTimer* ram_watchdog_timer;
+    bool ram_watchdog_tripped; // true from trigger until free heap recovers
 };
 
 void desktop_lock(Desktop* desktop);

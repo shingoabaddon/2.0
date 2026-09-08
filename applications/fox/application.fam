@@ -1,6 +1,8 @@
-# Placeholder
 App(
     appid="foxapps",
     name="Special custom Apps Required by Fox Fw",
     apptype=FlipperAppType.METAPACKAGE,
+    provides=[
+        "foxhub",
+    ],
 )

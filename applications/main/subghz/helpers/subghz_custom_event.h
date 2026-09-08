@@ -15,6 +15,7 @@ typedef enum {
     SubGhzCustomEventSceneReceiverInfoTxStart,
     SubGhzCustomEventSceneReceiverInfoTxStop,
     SubGhzCustomEventSceneReceiverInfoSave,
+    SubGhzCustomEventSceneReceiverInfoTxFull,
     SubGhzCustomEventSceneSaveName,
     SubGhzCustomEventSceneSignalSettings,
     SubGhzCustomEventSceneSaveSuccess,
@@ -64,6 +65,7 @@ typedef enum {
     SubGhzCustomEventViewFreqAnalOkLong,
 
     SubGhzCustomEventByteInputDone,
+    SubGhzCustomEventNumberInputDone,
 
     /* Signal Visualizer view */
     SubGhzCustomEventViewSignalVisualizerBack,

@@ -53,6 +53,7 @@
 #include "feron.h"
 #include "roger.h"
 #include "elplast.h"
+#include "telcoma_edge.h"
 #include "treadmill37.h"
 #include "beninca_arc.h"
 #include "keyfinder.h"
@@ -85,4 +86,12 @@
 #include "ford_v1.h"
 #include "ford_v2.h"
 #include "ford_v3.h"
+#include "honda_v1.h"
+#include "honda_v2.h"
+#include "fiat_v0.h"
+#include "fiat_v1.h"
+#include "fiat_v2.h"
+#include "renault_v0.h"
+#include "land_rover_v0.h" // ported from ARF but left disabled below - ARF itself doesn't enable it yet
+#include "toyota.h" // ported from ARF but left disabled below - ARF itself doesn't enable it yet
 #include "x10.h"

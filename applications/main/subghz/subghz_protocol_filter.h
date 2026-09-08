@@ -29,7 +29,7 @@ extern "C" {
 
 typedef struct SubGhzProtocolFilter SubGhzProtocolFilter;
 
-/** Allocate and initialise the filter (all protocols enabled). */
+/** Allocate and initialize the filter (all protocols enabled). */
 SubGhzProtocolFilter* subghz_protocol_filter_alloc(void);
 
 /** Free the filter instance. */

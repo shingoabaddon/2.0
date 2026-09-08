@@ -5,7 +5,7 @@ App(
     targets=["f7"],
     entry_point="lfrfid_app",
     icon="A_125khz_14",
-    stack_size=2 * 1024,
+    stack_size=4 * 1024,
     order=20,
     resources="resources",
     fap_libs=["assets"],
@@ -20,5 +20,13 @@ App(
     apptype=FlipperAppType.PLUGIN,
     entry_point="cli_rfid_ep",
     requires=["cli"],
-    sources=["lfrfid_cli.c"],
+    sources=[
+        "lfrfid_cli.c",
+        "lfrfid_worker.c",
+        "lfrfid_worker_modes.c",
+        "lfrfid_raw_worker.c",
+        "lfrfid_raw_file.c",
+        "protocols/*.c",
+        "tools/*.c",
+    ],
 )

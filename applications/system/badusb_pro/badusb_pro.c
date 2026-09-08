@@ -350,7 +350,7 @@ static void start_script_execution(BadUsbProApp* app) {
     /* Set UI update callback */
     script_engine_set_callback(&app->engine, engine_status_cb, app);
 
-    /* Initialise execution view model */
+    /* Initialize execution view model */
     with_view_model(
         app->execution_view,
         ExecutionViewModel * m,

@@ -9,6 +9,25 @@
 #define RAW_FILE_NAME "RAW_"
 #define TAG           "SubGhzSceneReadRAW"
 
+/* Idle Start screen auto-start countdown: shows "REC (3)"->"REC (2)"->
+ * "REC (1)" then starts recording on its own, same as Garage's Read/Read
+ * RAW countdown. OK still skips it immediately (Start->REC is handled
+ * directly by the view's own input handler, never touches these statics).
+ * Reset in subghz_scene_read_raw_on_enter()'s default case and in the
+ * Erase ("New") custom event handler - the only two places that ever
+ * (re)set status to Start. s_start_countdown_fired guards against sending
+ * the synthetic REC event (see the Tick handler below) more than once,
+ * since model->status is set synchronously right before that event is
+ * queued, but the flag is kept as a belt-and-braces second guard. */
+#define SUBGHZ_AUTO_START_COUNTDOWN_SEC 3
+static uint8_t s_start_countdown_sec = 0;
+static uint8_t s_start_subtick = 0;
+static bool s_start_countdown_fired = false;
+/* Set true when Back cancels an in-progress countdown, so the Tick handler
+ * stops running it entirely - reset alongside the countdown itself at the
+ * same two re-arm points as above. */
+static bool s_start_cancelled = false;
+
 bool subghz_scene_read_raw_update_filename(SubGhz* subghz) {
     bool ret = false;
     //set the path to read the file
@@ -324,6 +343,11 @@ void subghz_scene_read_raw_on_enter(void* context) {
     default:
         subghz_read_raw_set_status(
             subghz->subghz_read_raw, SubGhzReadRAWStatusStart, "", threshold_rssi);
+        s_start_countdown_sec = SUBGHZ_AUTO_START_COUNTDOWN_SEC;
+        s_start_subtick = 0;
+        s_start_countdown_fired = false;
+        s_start_cancelled = false;
+        subghz_read_raw_set_start_countdown(subghz->subghz_read_raw, s_start_countdown_sec);
         break;
     }
 
@@ -368,6 +392,17 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
     if(event.type == SceneManagerEventTypeCustom) {
         switch(event.event) {
         case SubGhzCustomEventViewReadRAWBack:
+
+            if(subghz_read_raw_get_status(subghz->subghz_read_raw) == SubGhzReadRAWStatusStart &&
+               s_start_countdown_sec > 0) {
+                /* Countdown running on the Start screen - Back cancels it
+                 * and stays put, rather than exiting Read RAW. */
+                s_start_countdown_sec = 0;
+                s_start_cancelled = true;
+                subghz_read_raw_set_start_countdown(subghz->subghz_read_raw, 0);
+                consumed = true;
+                break;
+            }
 
             subghz_txrx_stop(subghz->txrx);
             //Stop save file
@@ -467,6 +502,14 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
             }
             subghz_rx_key_state_set(subghz, SubGhzRxKeyStateIDLE);
             notification_message(subghz->notifications, &sequence_reset_rgb);
+            /* "New" - view just moved status back to Start (see the Left-
+             * arrow handler in views/subghz_read_raw.c), so the auto-start
+             * countdown re-arms fresh here too. */
+            s_start_countdown_sec = SUBGHZ_AUTO_START_COUNTDOWN_SEC;
+            s_start_subtick = 0;
+            s_start_countdown_fired = false;
+            s_start_cancelled = false;
+            subghz_read_raw_set_start_countdown(subghz->subghz_read_raw, s_start_countdown_sec);
             consumed = true;
             break;
 
@@ -757,6 +800,40 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
             }
             break;
         default:
+            /* state_notifications==IDLE covers the Start screen as well as
+             * post-record IDLE and LoadKeyIDLE - only actually run the
+             * countdown while genuinely sitting on Start, hence the status
+             * getter rather than trusting state_notifications alone. */
+            if(!s_start_countdown_fired && !s_start_cancelled &&
+               subghz_read_raw_get_status(subghz->subghz_read_raw) ==
+                   SubGhzReadRAWStatusStart) {
+                s_start_subtick++;
+                if(s_start_subtick >= 10) {
+                    s_start_subtick = 0;
+                    if(s_start_countdown_sec > 0) {
+                        s_start_countdown_sec--;
+                        subghz_read_raw_set_start_countdown(
+                            subghz->subghz_read_raw, s_start_countdown_sec);
+                    }
+                    if(s_start_countdown_sec == 0) {
+                        s_start_countdown_fired = true;
+                        /* Set REC status synchronously here, same as the
+                         * view's own OK-press handler does - the REC event
+                         * handler below only runs the recording start-up
+                         * chain (SD file/RX), it never touches
+                         * model->status itself. Without this the view would
+                         * keep showing the Start screen for one more frame
+                         * after the countdown already fired. */
+                        subghz_read_raw_set_status(
+                            subghz->subghz_read_raw,
+                            SubGhzReadRAWStatusREC,
+                            "",
+                            subghz_threshold_rssi_get(subghz->threshold_rssi));
+                        view_dispatcher_send_custom_event(
+                            subghz->view_dispatcher, SubGhzCustomEventViewReadRAWREC);
+                    }
+                }
+            }
             break;
         }
     }

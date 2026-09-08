@@ -7,7 +7,7 @@
  * Flipper rescales BMPs at send time (see tagtinker_scene_transmit.c), so any
  * BMP can target any tag - the entry's width/height are the *target* dims, not
  * the source dims, and tx_stream_bmp_image samples the source pixels via
- * nearest-neighbour as it streams.
+ * nearest-neighbor as it streams.
  *
  * Filenames produced by web-image-prep are "<W>x<H>[_<label>].bmp"; the W/H
  * prefix is optional and used only as a label hint. Legacy "_p<page>" suffix

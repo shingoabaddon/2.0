@@ -63,6 +63,10 @@ struct Gui {
     FuriPubSub* input_events;
     uint8_t ongoing_input;
     ViewPort* ongoing_input_view_port;
+
+    // Screenshot "saved" confirmation overlay
+    bool screenshot_overlay_active;
+    FuriTimer* screenshot_overlay_timer;
 };
 
 /** Find enabled ViewPort in ViewPortArray

@@ -117,6 +117,20 @@ bool loader_signal(Loader* instance, uint32_t signal, void* arg);
 bool loader_get_application_name(Loader* instance, FuriString* name);
 
 /**
+ * @brief Get the appid of the currently running application
+ *
+ * Unlike loader_get_application_name() (the human-readable display name),
+ * this is the short lowercase identifier from the app's manifest
+ * (e.g. "subghz", "subghz_garage", "nfc") - the same string
+ * furi_thread_get_appid() reports for the app's threads.
+ *
+ * @param[in] instance pointer to the loader instance
+ * @param[inout] appid pointer to the string to contain the appid (must be allocated)
+ * @return true if it was possible to get an application appid, false otherwise
+ */
+bool loader_get_application_id(Loader* instance, FuriString* appid);
+
+/**
  * @brief Get the launch path or name of the currently running application
  * 
  * This is the string that was supplied to `loader_start` such that the current

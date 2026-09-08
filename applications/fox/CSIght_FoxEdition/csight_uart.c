@@ -269,7 +269,7 @@ static void dispatch_line(CSIghtApp* app, const char* line) {
     }
     // Unrecognised tags (plain command ACKs like [CSI/MODE/SUCCESS], or
     // anything from another Fox module) are ignored — matches the original
-    // "unknown byte, skip and keep parsing" behaviour.
+    // "unknown byte, skip and keep parsing" behavior.
 }
 
 // ─── RX thread ────────────────────────────────────────────────────────────────

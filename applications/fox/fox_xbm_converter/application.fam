@@ -1,0 +1,19 @@
+App(
+    appid="fox_xbm_converter",
+    name="Fox XBM Converter",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="fox_xbm_converter_app",
+    requires=[
+        "gui",
+        "storage",
+        "notification",
+    ],
+    stack_size=3 * 1024,
+    fap_category="Fox",
+    fap_version="1.0",
+    fap_description="Convert screenshots between XBM and monochrome BMP",
+    fap_author="FoxFW Team",
+    fap_icon="icon.png",
+    fap_icon_assets="images",
+    sources=["*.c*"],
+)

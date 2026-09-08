@@ -1,4 +1,5 @@
 #include "can_commander.h"
+#include "can_commander_compat.h"
 #include "views/dashboard/dashboard.h"
 
 #include <furi_hal_power.h>
@@ -928,7 +929,7 @@ bool app_args_set_key_value(char* args, size_t args_size, const char* key, const
     bool ok = false;
 
     char* save_ptr = NULL;
-    char* token = strtok_r(scratch, " ", &save_ptr);
+    char* token = cc_strtok_r(scratch, " ", &save_ptr);
 
     while(token) {
         char* eq = strchr(token, '=');
@@ -966,7 +967,7 @@ bool app_args_set_key_value(char* args, size_t args_size, const char* key, const
             used += step;
         }
 
-        token = strtok_r(NULL, " ", &save_ptr);
+        token = cc_strtok_r(NULL, " ", &save_ptr);
     }
 
     const int wrote = snprintf(

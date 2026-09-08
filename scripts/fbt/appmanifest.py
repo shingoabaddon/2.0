@@ -72,6 +72,7 @@ class FlipperApplication:
     fap_version: Union[str, Tuple[int]] = "0.1"
     fap_icon: Optional[str] = None
     fap_libs: List[str] = field(default_factory=list)
+    fap_exclude_libs: List[str] = field(default_factory=list)
     fap_category: str = ""
     fap_description: str = ""
     fap_author: str = ""

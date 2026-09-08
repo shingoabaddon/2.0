@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /**
- * Initialise the script engine to its default state.
+ * Initialize the script engine to its default state.
  */
 void script_engine_init(ScriptEngine* engine);
 

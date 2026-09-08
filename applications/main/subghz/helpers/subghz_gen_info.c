@@ -636,7 +636,7 @@ void subghz_scene_set_type_fill_generation_infos(GenInfo* infos_dest, SetType ty
             .mod = "AM650",
             .freq = 433920000,
             .keeloq.serial = key & 0x00FFFFFF,
-            .keeloq.btn = 0x06,
+            .keeloq.btn = 0x09,
             .keeloq.cnt = 0x03,
             .keeloq.manuf = "Genius_Bravo"};
         break;

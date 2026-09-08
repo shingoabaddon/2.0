@@ -6,6 +6,7 @@
 
 typedef struct {
     SubGhzProtocolEncoderBase* base;
+    size_t registry_index;
 } SubGhzReceiverSlot;
 
 ARRAY_DEF(SubGhzReceiverSlotArray, SubGhzReceiverSlot, M_POD_OPLIST); //-V658
@@ -17,6 +18,9 @@ struct SubGhzReceiver {
 
     SubGhzReceiverCallback callback;
     void* context;
+
+    SubGhzReceiverProtocolEnabledCallback protocol_enabled_callback;
+    void* protocol_enabled_context;
 };
 
 SubGhzReceiver* subghz_receiver_alloc_init(SubGhzEnvironment* environment) {
@@ -32,11 +36,14 @@ SubGhzReceiver* subghz_receiver_alloc_init(SubGhzEnvironment* environment) {
         if(protocol->decoder && protocol->decoder->alloc) {
             SubGhzReceiverSlot* slot = SubGhzReceiverSlotArray_push_new(instance->slots);
             slot->base = protocol->decoder->alloc(environment);
+            slot->registry_index = i;
         }
     }
 
     instance->callback = NULL;
     instance->context = NULL;
+    instance->protocol_enabled_callback = NULL;
+    instance->protocol_enabled_context = NULL;
     return instance;
 }
 
@@ -63,7 +70,12 @@ void subghz_receiver_decode(SubGhzReceiver* instance, bool level, uint32_t durat
 
     for
         M_EACH(slot, instance->slots, SubGhzReceiverSlotArray_t) {
-            if((slot->base->protocol->flag & instance->filter) != 0) {
+            if((slot->base->protocol->flag & instance->filter) != 0 &&
+               (!instance->protocol_enabled_callback ||
+                instance->protocol_enabled_callback(
+                    instance->protocol_enabled_context,
+                    slot->registry_index,
+                    slot->base->protocol->name))) {
                 slot->base->protocol->decoder->feed(slot->base, level, duration);
             }
         }
@@ -105,6 +117,15 @@ void subghz_receiver_set_rx_callback(
 void subghz_receiver_set_filter(SubGhzReceiver* instance, SubGhzProtocolFlag filter) {
     furi_check(instance);
     instance->filter = filter;
+}
+
+void subghz_receiver_set_protocol_enabled_callback(
+    SubGhzReceiver* instance,
+    SubGhzReceiverProtocolEnabledCallback callback,
+    void* context) {
+    furi_check(instance);
+    instance->protocol_enabled_callback = callback;
+    instance->protocol_enabled_context = context;
 }
 
 SubGhzProtocolDecoderBase* subghz_receiver_search_decoder_base_by_name(

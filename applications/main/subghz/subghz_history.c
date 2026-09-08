@@ -224,6 +224,21 @@ bool subghz_history_add_to_history(
             FURI_LOG_E(TAG, "Missing Protocol");
             break;
         }
+        if(item->type == SubGhzProtocolTypeTpms) {
+            // TPMS protocols carry an "Id" (uint32) instead of a "Key" (uint64 hex).
+            // Format as "<Protocol> <hex-id>" and skip the generic Key path below.
+            uint32_t id = 0;
+            if(flipper_format_read_uint32(item->flipper_string, "Id", &id, 1)) {
+                furi_string_printf(
+                    item->item_str,
+                    "%s %08lX",
+                    furi_string_get_cstr(instance->tmp_string),
+                    (unsigned long)id);
+            } else {
+                furi_string_set(item->item_str, instance->tmp_string);
+            }
+            break;
+        }
         if(!strcmp(furi_string_get_cstr(instance->tmp_string), "KeeLoq")) {
             furi_string_set(instance->tmp_string, "KL ");
             if(!flipper_format_read_string(item->flipper_string, "Manufacture", text)) {

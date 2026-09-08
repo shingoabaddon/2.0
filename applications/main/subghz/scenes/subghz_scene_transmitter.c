@@ -60,10 +60,10 @@ bool subghz_scene_transmitter_update_data_show(void* context) {
 
     /* Save which button is active BEFORE we restore to OK.
      * If a direction was pressed, fff_data has been modified to that
-     * direction's button value — we must NOT use that as the centre label. */
+     * direction's button value — we must NOT use that as the center label. */
     uint8_t active_btn = subghz_custom_btn_get();
 
-    /* Restore to OK/original before deserialising so key_str reflects the
+    /* Restore to OK/original before deserializing so key_str reflects the
      * captured signal, not whatever the encoder last wrote. */
     subghz_custom_btn_set(SUBGHZ_CUSTOM_BTN_OK);
     if(subghz_protocol_decoder_base_deserialize(decoder, fff) == SubGhzProtocolStatusOk) {
@@ -86,7 +86,7 @@ bool subghz_scene_transmitter_update_data_show(void* context) {
              * When a DIRECTION button was pressed, fff_data is modified to
              * that button's value so key_str would yield the direction's
              * label, not the original.  We keep the labels from enter so
-             * the centre always shows the captured signal name and
+             * the center always shows the captured signal name and
              * duplicate-hiding never incorrectly removes a direction. */
             if(active_btn == SUBGHZ_CUSTOM_BTN_OK ||
                !subghz_view_transmitter_is_labels_ready(subghz->subghz_transmitter)) {

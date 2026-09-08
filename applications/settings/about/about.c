@@ -124,6 +124,22 @@ static DialogMessageButton foxfw_info_screen3(DialogsApp* dialogs, DialogMessage
 static DialogMessageButton foxfw_info_screen4(DialogsApp* dialogs, DialogMessage* message) {
      DialogMessageButton result;
 
+    const char* screen_header = " Friends of FoxFW Team\n";
+
+    const char* screen_text = "@VYNKO  @MitchMalik\n@ArthurK  @Greml1n\n@rrboys795  @ABaguanfa";
+    dialog_message_set_header(message, screen_header, 0, 0, AlignLeft, AlignTop);
+    dialog_message_set_text(message, screen_text, 0, 11, AlignLeft, AlignTop);
+    result = dialog_message_show(dialogs, message);
+    dialog_message_set_header(message, NULL, 0, 0, AlignLeft, AlignTop);
+    dialog_message_set_text(message, NULL, 0, 0, AlignLeft, AlignTop);
+
+    return result;
+    
+}
+
+static DialogMessageButton foxfw_info_screen5(DialogsApp* dialogs, DialogMessage* message) {
+     DialogMessageButton result;
+
     const char* screen_header = "      TO MY LOVE\n";
 
     const char* screen_text = "Samantha $ammyB Bloomfield\n"
@@ -215,6 +231,7 @@ const AboutDialogScreen about_screens[] = {
     foxfw_info_screen2,
     foxfw_info_screen3,
     foxfw_info_screen4,
+    foxfw_info_screen5,
     product_screen,
     compliance_screen,
     address_screen,

@@ -804,7 +804,7 @@ SubGhzProtocolStatus
     SubGhzProtocolDecoderKiaV3V4* instance = context;
 
     SubGhzProtocolStatus ret =
-        subghz_block_generic_deserialize_check_count_bit(&instance->generic, flipper_format, 64);
+        subghz_block_generic_deserialize_check_count_bit(&instance->generic, flipper_format, 68);
 
     if(ret == SubGhzProtocolStatusOk) {
         uint32_t temp = 0;

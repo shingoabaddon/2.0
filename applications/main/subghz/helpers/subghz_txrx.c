@@ -5,8 +5,33 @@
 #include <applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h>
 #include <lib/subghz/devices/cc1101_int/cc1101_int_interconnect.h>
 #include <lib/subghz/blocks/custom_btn.h>
+#include <storage/storage.h>
 
 #define TAG "SubGhzTxRx"
+
+/* Same flag file Desktop's status-bar icon reads (see CC1101_EXT_STATUS_PATH
+ * in applications/services/desktop/desktop.c) - written here too so a
+ * detection made by this app (at its own startup, or whenever the user
+ * picks External in Radio Settings) shows up on the icon right away
+ * instead of waiting on Desktop's own separate background probe. Only
+ * called when this app actually just checked for an external module (see
+ * call sites in subghz_txrx_radio_device_set() below), never on a plain
+ * "switch to Internal" request that didn't check anything. */
+#define FOX_CC1101_EXT_STATUS_PATH EXT_PATH("subghz/.cc1101_ext_status")
+
+static void fox_cc1101_ext_status_write(bool connected) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+    if(storage_file_open(file, FOX_CC1101_EXT_STATUS_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        char c = connected ? '1' : '0';
+        storage_file_write(file, &c, 1);
+        storage_file_close(file);
+    } else {
+        FURI_LOG_W(TAG, "Couldn't write %s", FOX_CC1101_EXT_STATUS_PATH);
+    }
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
+}
 
 static void subghz_txrx_radio_device_power_on(SubGhzTxRx* instance) {
     UNUSED(instance);
@@ -33,6 +58,7 @@ SubGhzTxRx* subghz_txrx_alloc(void) {
     subghz_txrx_set_default_preset(instance, 0);
 
     instance->txrx_state = SubGhzTxRxStateSleep;
+    instance->frequency_offset = 0;
 
     subghz_txrx_hopper_set_state(instance, SubGhzHopperStateOFF);
     subghz_txrx_preset_hopper_set_state(instance, SubGhzPresetHopperStateOFF);
@@ -235,7 +261,8 @@ static uint32_t subghz_txrx_rx(SubGhzTxRx* instance, uint32_t frequency) {
 
     subghz_devices_idle(instance->radio_device);
 
-    uint32_t value = subghz_devices_set_frequency(instance->radio_device, frequency);
+    uint32_t value = subghz_devices_set_frequency(
+        instance->radio_device, (uint32_t)((int64_t)frequency + instance->frequency_offset));
     subghz_devices_flush_rx(instance->radio_device);
     subghz_txrx_speaker_on(instance);
 
@@ -279,7 +306,8 @@ static bool subghz_txrx_tx(SubGhzTxRx* instance, uint32_t frequency) {
     furi_assert(instance->txrx_state != SubGhzTxRxStateSleep);
 
     subghz_devices_idle(instance->radio_device);
-    subghz_devices_set_frequency(instance->radio_device, frequency);
+    subghz_devices_set_frequency(
+        instance->radio_device, (uint32_t)((int64_t)frequency + instance->frequency_offset));
 
     bool ret = subghz_devices_set_tx(instance->radio_device);
     if(ret) {
@@ -758,6 +786,14 @@ void subghz_txrx_receiver_set_filter(SubGhzTxRx* instance, SubGhzProtocolFlag fi
     subghz_receiver_set_filter(instance->receiver, filter);
 }
 
+void subghz_txrx_set_protocol_enabled_callback(
+    SubGhzTxRx* instance,
+    SubGhzReceiverProtocolEnabledCallback callback,
+    void* context) {
+    furi_assert(instance);
+    subghz_receiver_set_protocol_enabled_callback(instance->receiver, callback, context);
+}
+
 void subghz_txrx_set_rx_callback(
     SubGhzTxRx* instance,
     SubGhzReceiverCallback callback,
@@ -806,6 +842,7 @@ SubGhzRadioDeviceType
         instance->radio_device = subghz_devices_get_by_name(SUBGHZ_DEVICE_CC1101_EXT_NAME);
         subghz_devices_begin(instance->radio_device);
         instance->radio_device_type = SubGhzRadioDeviceTypeExternalCC1101;
+        fox_cc1101_ext_status_write(true);
     } else {
         subghz_txrx_radio_device_power_off(instance);
         if(instance->radio_device_type != SubGhzRadioDeviceTypeInternal) {
@@ -813,6 +850,12 @@ SubGhzRadioDeviceType
         }
         instance->radio_device = subghz_devices_get_by_name(SUBGHZ_DEVICE_CC1101_INT_NAME);
         instance->radio_device_type = SubGhzRadioDeviceTypeInternal;
+        if(radio_device_type == SubGhzRadioDeviceTypeExternalCC1101) {
+            // Actually checked for one and didn't find it - a plain request
+            // for Internal (that never asked about External) leaves the
+            // flag alone instead.
+            fox_cc1101_ext_status_write(false);
+        }
     }
 
     return instance->radio_device_type;
@@ -864,6 +907,16 @@ void subghz_txrx_set_debug_pin_state(SubGhzTxRx* instance, bool state) {
 bool subghz_txrx_get_debug_pin_state(SubGhzTxRx* instance) {
     furi_assert(instance);
     return instance->debug_pin_state;
+}
+
+void subghz_txrx_set_frequency_offset(SubGhzTxRx* instance, int32_t offset_hz) {
+    furi_assert(instance);
+    instance->frequency_offset = offset_hz;
+}
+
+int32_t subghz_txrx_get_frequency_offset(SubGhzTxRx* instance) {
+    furi_assert(instance);
+    return instance->frequency_offset;
 }
 
 void subghz_txrx_reset_dynamic_and_custom_btns(SubGhzTxRx* instance) {

@@ -1,4 +1,5 @@
 #include "can_commander_uart.h"
+#include "../can_commander_compat.h"
 
 #include <furi_hal.h>
 #include <furi_hal_serial.h>
@@ -935,7 +936,7 @@ bool cc_client_tool_start(
         return false;
     }
 
-    const uint16_t args_len = args ? (uint16_t)strnlen(args, CC_MAX_PAYLOAD - 1U) : 0;
+    const uint16_t args_len = args ? (uint16_t)cc_strnlen(args, CC_MAX_PAYLOAD - 1U) : 0;
 
     if(args && args[args_len] != '\0') {
         return false;
@@ -967,7 +968,7 @@ bool cc_client_tool_status(CcClient* client, CcStatusCode* out_status) {
 }
 
 bool cc_client_tool_config(CcClient* client, const char* args, CcStatusCode* out_status) {
-    const uint16_t args_len = args ? (uint16_t)strnlen(args, CC_MAX_PAYLOAD) : 0;
+    const uint16_t args_len = args ? (uint16_t)cc_strnlen(args, CC_MAX_PAYLOAD) : 0;
     if(args && args[args_len] != '\0') {
         return false;
     }
@@ -1010,7 +1011,7 @@ bool cc_client_dbc_add_signal(
 
     memset(&payload[26], 0, CC_UNIT_TEXT_LEN);
     if(def->unit[0]) {
-        memcpy(&payload[26], def->unit, strnlen(def->unit, CC_UNIT_TEXT_LEN));
+        memcpy(&payload[26], def->unit, cc_strnlen(def->unit, CC_UNIT_TEXT_LEN));
     }
 
     cc_write_u16_le(&payload[38], def->sid);

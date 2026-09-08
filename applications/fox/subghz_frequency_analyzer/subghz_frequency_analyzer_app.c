@@ -460,11 +460,16 @@ static FreqAnalyzerApp* app_alloc(void) {
     app->gui         = furi_record_open(RECORD_GUI);
     app->view_port   = view_port_alloc();
     app->input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
-    view_port_draw_callback_set(app->view_port, draw_cb, app);
-    view_port_input_callback_set(app->view_port, input_cb, app->input_queue);
-    gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
-    view_port_update(app->view_port);
 
+    /* Do all the SD-card reads (settings, mod filter, last-settings) before
+     * registering the input callback / adding the view port to the GUI.
+     * Registering first meant a button pressed during this loading window
+     * queued into input_queue same as any real press, then got silently
+     * discarded a few lines later by the post-alloc drain in the app's
+     * main entry point - so a press right after launch could appear to do
+     * nothing. Nothing can queue into input_queue before it's wired up to
+     * the GUI, so ordering it last removes that window entirely instead of
+     * trying to filter it out afterward. */
     app->setting    = subghz_setting_alloc();
     subghz_setting_load(app->setting, SETTING_FILE_PATH);
     app->freq_count = subghz_setting_get_frequency_count(app->setting);
@@ -480,6 +485,11 @@ static FreqAnalyzerApp* app_alloc(void) {
 
     app->worker_thread = furi_thread_alloc_ex("FreqAnalWorker", 1024, worker_fn, app);
     furi_thread_start(app->worker_thread);
+
+    view_port_draw_callback_set(app->view_port, draw_cb, app);
+    view_port_input_callback_set(app->view_port, input_cb, app->input_queue);
+    gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
+    view_port_update(app->view_port);
     return app;
 }
 
@@ -498,13 +508,20 @@ static void app_free(FreqAnalyzerApp* app) {
 }
 
 int32_t subghz_frequency_analyzer_app(void* p) {
-    char return_marker[16] = {0};
-    if(p && ((const char*)p)[0]) strncpy(return_marker, (const char*)p, sizeof(return_marker)-1);
+    char return_marker[24] = {0};
+    bool return_to_garage = false;
+    if(p && ((const char*)p)[0]) {
+        const char* arg = (const char*)p;
+        if(strncmp(arg, "garage:", 7) == 0) {
+            return_to_garage = true;
+            arg += 7;
+        } else if(strncmp(arg, "core:", 5) == 0) {
+            arg += 5;
+        }
+        strncpy(return_marker, arg, sizeof(return_marker) - 1);
+    }
 
     FreqAnalyzerApp* app = app_alloc();
-
-    InputEvent drain;
-    while(furi_message_queue_get(app->input_queue, &drain, 0) == FuriStatusOk) {}
 
     InputEvent event;
     while(!app->exit_requested) {
@@ -635,7 +652,11 @@ int32_t subghz_frequency_analyzer_app(void* p) {
         storage_file_close(f);
         storage_file_free(f); furi_record_close(RECORD_STORAGE);
         Loader* loader = furi_record_open(RECORD_LOADER);
-        loader_enqueue_launch(loader, "subghz", NULL, LoaderDeferredLaunchFlagNone);
+        loader_enqueue_launch(
+            loader,
+            return_to_garage ? EXT_PATH("apps/Sub-GHz/subghz_garage.fap") : "subghz",
+            NULL,
+            LoaderDeferredLaunchFlagNone);
         furi_record_close(RECORD_LOADER);
     }
 

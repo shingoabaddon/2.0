@@ -1,5 +1,6 @@
 #include "../subghz_i.h" // IWYU pragma: keep
 #include <lib/subghz/protocols/base.h>
+#include <lib/subghz/protocols/fiat_v1.h>
 
 enum SubmenuIndex {
     SubmenuIndexEmulate,
@@ -118,9 +119,25 @@ bool subghz_scene_saved_menu_on_event(void* context, SceneManagerEvent event) {
         if(event.event == SubmenuIndexEmulate) {
             scene_manager_set_scene_state(
                 subghz->scene_manager, SubGhzSceneSavedMenu, SubmenuIndexEmulate);
-            /* Decoded signals go directly to the Transmitter scene which shows
-             * protocol name, key data, and action buttons (e.g. LOCK/UNLOCK). */
-            scene_manager_next_scene(subghz->scene_manager, SubGhzSceneTransmitter);
+            /* Fiat V1 needs a Hitag2 key to transmit; prompt for it first if
+             * the loaded file doesn't already have one saved. */
+            FlipperFormat* fff = subghz_txrx_get_fff_data(subghz->txrx);
+            bool needs_fiat_v1_key = false;
+            if(fff) {
+                FuriString* proto = furi_string_alloc();
+                flipper_format_rewind(fff);
+                if(flipper_format_read_string(fff, "Protocol", proto) &&
+                   furi_string_equal_str(proto, FIAT_V1_PROTOCOL_NAME)) {
+                    uint8_t key[6];
+                    flipper_format_rewind(fff);
+                    needs_fiat_v1_key =
+                        !flipper_format_read_hex(fff, FIAT_V1_HITAG2_KEY_FIELD, key, sizeof(key));
+                }
+                furi_string_free(proto);
+            }
+            scene_manager_next_scene(
+                subghz->scene_manager,
+                needs_fiat_v1_key ? SubGhzSceneFiatV1KeyMethod : SubGhzSceneTransmitter);
             return true;
         } else if(event.event == SubmenuIndexDetails) {
             /* Decode the signal and show all fields in the Details scene

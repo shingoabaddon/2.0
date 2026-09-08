@@ -76,40 +76,6 @@ void subghz_view_transmitter_set_radio_device_type(
         true);
 }
 
-static void subghz_view_transmitter_button_right(Canvas* canvas, const char* str) {
-    const uint8_t button_height = 12;
-    const uint8_t vertical_offset = 3;
-    const uint8_t horizontal_offset = 1;
-    const uint8_t string_width = canvas_string_width(canvas, str);
-    const Icon* icon = &I_ButtonCenter_7x7;
-    const uint8_t icon_offset = 3;
-    const uint8_t icon_width_with_offset = icon_get_width(icon) + icon_offset;
-    const uint8_t button_width = string_width + horizontal_offset * 2 + icon_width_with_offset;
-
-    const uint8_t x = (canvas_width(canvas) - button_width) / 2 + 40;
-    const uint8_t y = canvas_height(canvas);
-
-    canvas_draw_box(canvas, x, y - button_height, button_width, button_height);
-
-    canvas_draw_line(canvas, x - 1, y, x - 1, y - button_height + 0);
-    canvas_draw_line(canvas, x - 2, y, x - 2, y - button_height + 1);
-    canvas_draw_line(canvas, x - 3, y, x - 3, y - button_height + 2);
-
-    canvas_draw_line(canvas, x + button_width + 0, y, x + button_width + 0, y - button_height + 0);
-    canvas_draw_line(canvas, x + button_width + 1, y, x + button_width + 1, y - button_height + 1);
-    canvas_draw_line(canvas, x + button_width + 2, y, x + button_width + 2, y - button_height + 2);
-
-    canvas_invert_color(canvas);
-    canvas_draw_icon(
-        canvas,
-        x + horizontal_offset,
-        y - button_height + vertical_offset - 1,
-        &I_ButtonCenter_7x7);
-    canvas_draw_str(
-        canvas, x + horizontal_offset + icon_width_with_offset, y - vertical_offset, str);
-    canvas_invert_color(canvas);
-}
-
 static void txv_first_line(const char* s, char* d, size_t n) {
     size_t i = 0;
     while(s[i] && s[i] != '\n' && i < n-1) { d[i]=s[i]; i++; }
@@ -225,10 +191,23 @@ void subghz_view_transmitter_draw(Canvas* canvas, SubGhzViewTransmitterModel* mo
         /* Radio device shown in info row (F:/mod), no separate indicator needed */
 
     } else if(model->show_button) {
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 58, 62,
-            (model->device_type == SubGhzRadioDeviceTypeInternal) ? "R: Int" : "R: Ext");
-        subghz_view_transmitter_button_right(canvas, "Send");
+        /* Protocol has no custom-button remap data (e.g. Kia V5's capture-
+         * and-replay-only encoder, which has no way to re-synthesize a
+         * different button's signal) - draw the same d-pad grid as above
+         * for visual consistency across every protocol's transmit screen,
+         * but leave Up/Left/Right/Down blank. They're already genuine
+         * no-ops at the input layer (the real remap handling below is
+         * gated behind subghz_custom_btn_is_allowed(), which is false
+         * here) - this just makes that visible instead of silently doing
+         * nothing when pressed. */
+        const uint8_t bw=34, bh=9;
+        const uint8_t cx=47, lx=4, rx=90;
+        const uint8_t row1=31, row2=43, row3=55;
+        txv_btn_box(canvas, cx, row1, bw, bh, "", false);
+        txv_btn_box(canvas, lx, row2, bw, bh, "", false);
+        txv_btn_box(canvas, cx, row2, bw, bh, "SEND", true);
+        txv_btn_box(canvas, rx, row2, bw, bh, "", false);
+        txv_btn_box(canvas, cx, row3, bw, bh, "", false);
     }
 
     /* Page / temp-button indicator */

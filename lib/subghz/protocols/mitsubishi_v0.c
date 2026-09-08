@@ -13,7 +13,7 @@ static const SubGhzBlockConst subghz_protocol_mitsubishi_v0_const = {
     .te_short = 250,
     .te_long = 500,
     .te_delta = 100,
-    .min_count_bit_for_found = 80,
+    .min_count_bit_for_found = 96,
 };
 
 struct SubGhzProtocolDecoderMitsubishiV0 {
@@ -193,7 +193,7 @@ LevelDuration subghz_protocol_encoder_mitsubishi_v0_yield(void* context) {
     if(!instance->encoder.is_running || instance->encoder.repeat == 0) return level_duration_reset();
     LevelDuration ret = instance->encoder.upload[instance->encoder.front];
     if(++instance->encoder.front == instance->encoder.size_upload) {
-        instance->encoder.repeat--;
+        if(!subghz_block_generic_global.endless_tx) instance->encoder.repeat--;
         instance->encoder.front = 0;
     }
     return ret;

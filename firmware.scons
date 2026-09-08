@@ -178,6 +178,19 @@ if env["IS_BASE_FIRMWARE"]:
     fwenv.Replace(FW_RESOURCES_MANIFEST=manifest)
     fwenv.Alias("resources", manifest)
 
+    # Make every real build path (updater_package, flash_usb_full, and the
+    # plain default target all depend on FW_RESOURCES_MANIFEST) actually run
+    # ValidateAppImports for every app - previously only the separate
+    # "faps"/"fap_dist" aliases pulled these in, which nothing in
+    # clean_build.bat's actual commands ever requests, so Missing-Imports
+    # bugs (FFB, Fox Settings, lfrfid) were never caught before flash despite
+    # the checker itself being correct. See fbt_extapps.py's
+    # _validate_app_imports().
+    fwenv.Depends(
+        manifest,
+        list(app_artifact.validator for app_artifact in fw_extapps.application_map.values()),
+    )
+
     # API getter
     fwenv.Append(FBT_API_VERSION=LazySdkVersionLoader(fwenv.subst("$SDK_DEFINITION")))
     fwenv.PhonyTarget(

@@ -209,7 +209,7 @@ static bool save_setting(Nrf24Tool* context) {
     return ret;
 }
 
-/* Allocate the memory and initialise the variables */
+/* Allocate the memory and initialize the variables */
 static Nrf24Tool* nrf24Tool_alloc(void) {
     Nrf24Tool* app = malloc(sizeof(Nrf24Tool));
 

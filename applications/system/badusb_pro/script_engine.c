@@ -584,7 +584,7 @@ static bool do_var_assign(ScriptEngine* engine, const char* expr) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  Initialisation
+ *  Initialization
  * ════════════════════════════════════════════════════════════════════════════ */
 
 void script_engine_init(ScriptEngine* engine) {

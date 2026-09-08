@@ -242,7 +242,7 @@ static void desktop_view_pin_input_draw(Canvas* canvas, void* context) {
     if(total_dots > 0) {
         uint8_t dot_gap    = (total_dots > 6) ? 5 : 7; // tighter spacing for 7-10 digits
         int16_t dot_width  = (int16_t)((total_dots * dot_gap) - 1);
-        int16_t dot_center = 59 + (65 / 2); // centre of the right-hand area
+        int16_t dot_center = 59 + (65 / 2); // center of the right-hand area
         int16_t dot_start  = dot_center - (dot_width / 2);
         if(dot_start < 60) dot_start = 60; // never drift into the text area
 

@@ -9,9 +9,10 @@
 
 typedef uint8_t ProgMode;
 
-void subghz_custom_btn_set_original(uint8_t btn_code);
-
-void subghz_custom_btn_set_max(uint8_t b);
+/* set_original()/set_max() moved to the public custom_btn.h - protocol
+ * files compiled as external .fal plugins need them SDK-exported (see
+ * targets/f7/api_symbols.csv), and they're genuinely public API (every
+ * decoder that supports button remapping calls them), not internal-only. */
 
 void subghz_custom_btn_set_prog_mode(ProgMode prog_mode);
 

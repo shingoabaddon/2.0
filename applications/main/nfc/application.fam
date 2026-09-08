@@ -5,7 +5,7 @@ App(
     targets=["f7"],
     entry_point="nfc_app",
     icon="A_NFC_14",
-    stack_size=5 * 1024,
+    stack_size=8 * 1024,
     order=10,
     resources="resources",
     sources=["*.c*", "!plugins", "!nfc_cli.c", "!cli"],
@@ -89,7 +89,7 @@ App(
         "helpers/protocol_support/felica/*.c",
         "helpers/felica_*.c",
     ],
-    fal_embedded=True,
+    fal_embedded=False,
 )
 
 App(
@@ -131,8 +131,10 @@ App(
         "helpers/protocol_support/mf_plus/*.c",
         "helpers/protocol_support/iso14443_4a/*.c",
         "helpers/protocol_support/iso14443_3a/*.c",
+        "helpers/mf_plus_key_cache.c",
     ],
     fal_embedded=True,
+    fap_exclude_libs=["gcc"],
 )
 
 App(
@@ -250,6 +252,15 @@ App(
     targets=["f7"],
     requires=["nfc"],
     sources=["plugins/supported_cards/mizip.c"],
+)
+
+App(
+    appid="bambu_parser",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="bambu_plugin_ep",
+    targets=["f7"],
+    requires=["nfc"],
+    sources=["plugins/supported_cards/bambu.c"],
 )
 
 App(

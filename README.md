@@ -55,7 +55,7 @@ companion firmware, **Fox ESP32 Firmware**, flashed once to the ESP32 itself.
 
 | App | What it does |
 |---|---|
-| **Fox ESP32 Commander** | The main control hub — WiFi recon and attacks, BLE scanning and tag detection, an HTTP/WebSocket bridge, the FoxScript engine, and a raw Terminal |
+| **FoxHub** | The main control hub — WiFi recon and attacks, BLE scanning and tag detection, an HTTP/WebSocket bridge, the FoxScript engine, and a raw Terminal |
 | **Fox ESP32 Detector** | Diagnostic tool — scans every GPIO pin pair and baud rate to identify a connected ESP32 and confirm your wiring |
 | **Fox ESP32 Flasher** | Flash Fox ESP32 Firmware onto a connected board directly from the Flipper — no PC, no browser, no files to download |
 | **Fox Update Downloader** | Checks GitHub for newer FoxFW and Fox ESP32 Firmware releases, downloads them over the ESP32 bridge, and hands off to install |

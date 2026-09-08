@@ -65,6 +65,7 @@ enum LfRfidCustomEvent {
     LfRfidEventWriteTooLongToWrite,
     LfRfidEventRpcLoadFile,
     LfRfidEventRpcSessionClose,
+    LfRfidEventWipeProgress,
 };
 
 typedef enum {
@@ -127,6 +128,8 @@ typedef enum {
     LfRfidMenuIndexRead,
     LfRfidMenuIndexSaved,
     LfRfidMenuIndexAddManually,
+    LfRfidMenuIndexT5577Multiwriter,
+    LfRfidMenuIndexFuzzer,
     LfRfidMenuIndexExtraActions,
 } LfRfidMenuIndex;
 

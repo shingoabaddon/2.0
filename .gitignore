@@ -11,6 +11,7 @@
 /clean_build.bat
 /clean_build.sh
 /clean_build.txt
+/clean_build_size_report.ps1
 /fbt_build_size.txt
 /scripts/backup/
 /build_fox_apps_suite.bat
@@ -72,6 +73,11 @@ null.d
 
 # SCons build dir
 /build
+
+# clean_build.bat's timestamped compile-log copies (root-level, not
+# build/logs, so they survive the rmdir /s /q build/ that several of its
+# menu options run before compiling)
+/logs
 
 # Toolchain
 /toolchain

@@ -39,7 +39,6 @@
         "ibutton",
         "music_worker",
         "mbedtls",
-        "lfrfid",
         "flipper_application",
         "u8g2",
         "nanopb",

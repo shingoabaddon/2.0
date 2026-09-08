@@ -218,7 +218,7 @@ static void run_event_cb(const TtWifiEvent* e, void* user) {
         uint16_t w = (uint16_t)(e->u0 & 0xFFFFu);
         uint16_t h = (uint16_t)(e->u0 >> 16);
         uint8_t  pl = (uint8_t)(e->u1 ? e->u1 : 1);
-        /* Pick a palette accent that matches the destination tag's colour
+        /* Pick a palette accent that matches the destination tag's color
          * so the BMP file embeds the right BGR for previewers. The IR TX
          * path itself only cares about plane bits + the target profile. */
         uint8_t ar = 0xE0, ag = 0x10, ab = 0x10;  /* default red */

@@ -11,7 +11,7 @@ typedef struct EvilBleUart EvilBleUart;
  * duration of the call — copy if needed. */
 typedef void (*EvilBleUartRxCallback)(const char* line, void* ctx);
 
-/* Allocate and initialise the UART layer.
+/* Allocate and initialize the UART layer.
  * Acquires USART, disables the expansion module, and starts the RX worker.
  * Always returns a valid pointer; check evil_ble_uart_is_connected() to
  * determine whether the serial port was successfully acquired. */

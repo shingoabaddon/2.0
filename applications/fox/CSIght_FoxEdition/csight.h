@@ -140,7 +140,7 @@ typedef struct {
     uint32_t    target_ts;
 
     // ESP32 detect gate — runs once at launch, before the CSI-specific
-    // handshake, same pattern as fox_file_downloader/fox_esp32_commander etc:
+    // handshake, same pattern as fox_file_downloader/foxhub etc:
     // ping the generic "info" command and wait for the plain-text reply
     // every Fox_ESP32_FW build sends, regardless of which app is attached.
     bool     esp32_probe_ok;

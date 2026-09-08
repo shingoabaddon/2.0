@@ -18,4 +18,6 @@ typedef enum {
     iButtonCustomEventRpcLoadFile,
     iButtonCustomEventRpcExit,
     iButtonCustomEventRpcSessionClose,
+
+    iButtonCustomEventFuzzerExit,
 } iButtonCustomEvent;

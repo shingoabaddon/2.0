@@ -53,6 +53,19 @@ struct Loader {
     uint32_t load_watchdog_started_tick;
     char load_watchdog_app_name[40];
     View* still_loading_view;
+
+    /* still_loading_view's input callback runs synchronously on the GUI
+     * thread (ViewHolder has no per-app input queue/thread hop the way
+     * ViewDispatcher does), and it fires on a long-press Back while that
+     * key is still physically held. Calling view_holder_set_view()
+     * directly from there deadlocks: it blocks until the key's Release
+     * is delivered, but that Release can only be delivered by this same
+     * GUI thread pumping its own input queue - which it can't do while
+     * stuck in that wait. still_loading_exit_timer defers the actual
+     * view_holder_set_view() call onto the FreeRTOS timer service thread
+     * instead, so the GUI thread returns immediately, processes the
+     * pending Release normally, and the deferred call proceeds unblocked. */
+    FuriTimer* still_loading_exit_timer;
 };
 
 typedef enum {
@@ -67,6 +80,7 @@ typedef enum {
     LoaderMessageTypeStartByNameDetachedWithGuiError,
     LoaderMessageTypeSignal,
     LoaderMessageTypeGetApplicationName,
+    LoaderMessageTypeGetApplicationId,
     LoaderMessageTypeGetApplicationLaunchPath,
     LoaderMessageTypeEnqueueLaunch,
     LoaderMessageTypeClearLaunchQueue,

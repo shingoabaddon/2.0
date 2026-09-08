@@ -14,7 +14,6 @@
 #define SUBGHZ_MOD_ANALYZER_FAP_PATH  EXT_PATH("apps/Sub-GHz/subghz_modulation_analyzer.fap")
 #define SUBGHZ_FREQ_ANALYZER_FAP_PATH EXT_PATH("apps/Sub-GHz/subghz_frequency_analyzer.fap")
 #define SUBGHZ_GDR_FAP_PATH           EXT_PATH("apps/Sub-GHz/garage_door_remote.fap")
-#define SUBGHZ_RF_JAMMER_FAP_PATH     EXT_PATH("apps/Fox/fox_rf_jammer.fap")
 
 void subghz_blank_transition_draw_cb(Canvas* canvas, void* ctx) {
     UNUSED(ctx);
@@ -73,14 +72,18 @@ void subghz_scene_start_on_enter(void* context) {
     bool has_freq_analyzer = storage_file_exists(storage, SUBGHZ_FREQ_ANALYZER_FAP_PATH);
     bool has_mod_analyzer  = storage_file_exists(storage, SUBGHZ_MOD_ANALYZER_FAP_PATH);
     bool has_gdr           = storage_file_exists(storage, SUBGHZ_GDR_FAP_PATH);
-    bool has_rf_jammer     = storage_file_exists(storage, SUBGHZ_RF_JAMMER_FAP_PATH);
     furi_record_close(RECORD_STORAGE);
 
     /* Configure the Fox-theme grid — show/hide conditional buttons */
     subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_FREQANA, has_freq_analyzer);
     subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_MODANA,  has_mod_analyzer);
     subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_GDR,     has_gdr);
-    subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_JAMMER,  has_rf_jammer);
+    /* Radio Settings, RF Jammer, and TPMS Reader all moved to the Mode
+     * Picker screen - see subghz_scene_mode_picker.c. Slots kept (not
+     * renumbered) like the dead GDR slot pattern elsewhere in this grid. */
+    subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_RADIOSETTINGS, false);
+    subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_JAMMER, false);
+    subghz_start_grid_set_visible(subghz->start_grid, SGRID_IDX_TPMS, false);
 
     /* Wire callback so grid button presses fire scene custom events */
     subghz_start_grid_set_callback(
@@ -103,8 +106,6 @@ void subghz_scene_start_on_enter(void* context) {
         else if(focus == SubmenuIndexProtocolList)         grid_btn = SGRID_IDX_PROTOCOLS;
         else if(focus == SubmenuIndexModulationList)       grid_btn = SGRID_IDX_MODLIST;
         else if(focus == SubmenuIndexGarageDoorRemote)     grid_btn = SGRID_IDX_GDR;
-        else if(focus == SubmenuIndexRFJammer)             grid_btn = SGRID_IDX_JAMMER;
-        else if(focus == SubmenuIndexExtSettings)          grid_btn = SGRID_IDX_RADIOSETTINGS;
         else if(focus == SubmenuIndexKeeloqKeys)           grid_btn = SGRID_IDX_KEELOQ;
         else if(focus == SubmenuIndexKeeloqBf2)            grid_btn = SGRID_IDX_KEELOQBF;
         subghz_start_grid_set_selected(subghz->start_grid, grid_btn);
@@ -140,11 +141,6 @@ void subghz_scene_start_on_enter(void* context) {
         if(has_gdr)
             submenu_add_item(subghz->submenu, "Garage Remote", SubmenuIndexGarageDoorRemote,
                 subghz_scene_start_submenu_callback, subghz);
-        if(has_rf_jammer)
-            submenu_add_item(subghz->submenu, "RF Jammer", SubmenuIndexRFJammer,
-                subghz_scene_start_submenu_callback, subghz);
-        submenu_add_item(subghz->submenu, "Radio Settings", SubmenuIndexExtSettings,
-            subghz_scene_start_submenu_callback, subghz);
         submenu_set_selected_item(subghz->submenu, focus);
         view_dispatcher_switch_to_view(subghz->view_dispatcher, SubGhzViewIdMenu);
     }
@@ -153,9 +149,12 @@ void subghz_scene_start_on_enter(void* context) {
 bool subghz_scene_start_on_event(void* context, SceneManagerEvent event) {
     SubGhz* subghz = context;
     if(event.type == SceneManagerEventTypeBack) {
-        //exit app
-        scene_manager_stop(subghz->scene_manager);
-        view_dispatcher_stop(subghz->view_dispatcher);
+        if(!scene_manager_previous_scene(subghz->scene_manager)) {
+            /* Only reached when Start is the true root scene (launched
+             * directly, not via the Mode Picker). */
+            scene_manager_stop(subghz->scene_manager);
+            view_dispatcher_stop(subghz->view_dispatcher);
+        }
         return true;
     } else if(event.type == SceneManagerEventTypeCustom) {
         if(event.event == SubmenuIndexReadRAW) {
@@ -185,15 +184,18 @@ bool subghz_scene_start_on_event(void* context, SceneManagerEvent event) {
              * applications/main/subghz_frequency_analyzer/. SubGHz exits
              * cleanly and the Loader launches the FAP right after — see
              * the comment above subghz_scene_start_launch_and_exit(). The
-             * "menu:freq" argument is what lets the FAP send us back to
-             * this exact menu item on Back, instead of the Desktop. */
+             * "core:" prefix tells the FAP which app to relaunch on Back
+             * (it's shared with Garage too); "menu:freq" is what lets it
+             * send us back to this exact menu item instead of the Desktop. */
             dolphin_deed(DolphinDeedSubGhzFrequencyAnalyzer);
-            subghz_scene_start_launch_and_exit(subghz, SUBGHZ_FREQ_ANALYZER_FAP_PATH, "menu:freq");
+            subghz_scene_start_launch_and_exit(
+                subghz, SUBGHZ_FREQ_ANALYZER_FAP_PATH, "core:menu:freq");
             return true;
         } else if(event.event == SubmenuIndexModulationAnalyzer) {
             /* Moved to an external FAP to save firmware .text space — see
              * applications/main/subghz_modulation_analyzer/. */
-            subghz_scene_start_launch_and_exit(subghz, SUBGHZ_MOD_ANALYZER_FAP_PATH, "menu:mod");
+            subghz_scene_start_launch_and_exit(
+                subghz, SUBGHZ_MOD_ANALYZER_FAP_PATH, "core:menu:mod");
             return true;
         } else if(event.event == SubmenuIndexProtocolList) {
             scene_manager_set_scene_state(
@@ -208,19 +210,6 @@ bool subghz_scene_start_on_event(void* context, SceneManagerEvent event) {
             scene_manager_set_scene_state(
                 subghz->scene_manager, SubGhzSceneStart, SubmenuIndexGarageDoorRemote);
             subghz_scene_start_launch_and_exit(subghz, SUBGHZ_GDR_FAP_PATH, NULL);
-            return true;
-        } else if(event.event == SubmenuIndexRFJammer) {
-            /* Same pattern as FA/MA: pass "menu:jammer" so the FAP writes
-             * .focus_menu on Back and enqueues SubGHz — SubGHz re-opens with
-             * this item selected. Launched from Apps list (no arg) exits normally. */
-            scene_manager_set_scene_state(
-                subghz->scene_manager, SubGhzSceneStart, SubmenuIndexRFJammer);
-            subghz_scene_start_launch_and_exit(subghz, SUBGHZ_RF_JAMMER_FAP_PATH, "menu:jammer");
-            return true;
-        } else if(event.event == SubmenuIndexExtSettings) {
-            scene_manager_set_scene_state(
-                subghz->scene_manager, SubGhzSceneStart, SubmenuIndexExtSettings);
-            scene_manager_next_scene(subghz->scene_manager, SubGhzSceneExtModuleSettings);
             return true;
         } else if(event.event == SubmenuIndexKeeloqKeys) {
             scene_manager_set_scene_state(

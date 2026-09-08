@@ -155,7 +155,7 @@ EvilBleUart* evil_ble_uart_alloc(void) {
 
     furi_hal_serial_async_rx_start(uart->serial, evil_ble_uart_isr_rx_cb, uart, false);
 
-    FURI_LOG_I(TAG, "UART initialised at 115200");
+    FURI_LOG_I(TAG, "UART initialized at 115200");
     return uart;
 }
 

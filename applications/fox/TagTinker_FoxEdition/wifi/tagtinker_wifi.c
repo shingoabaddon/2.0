@@ -5,7 +5,7 @@
  * speaking a bespoke 0xAA55 framed binary protocol. This file replaces
  * that with the AT bracket-command protocol every other Fox app already
  * speaks to Fox ESP32 Firmware (see esp_at.c), so a WiFi Dev Board that's
- * already flashed for Fox ESP32 Commander/Chat/Portal/etc. works here too
+ * already flashed for FoxHub/Chat/Portal/etc. works here too
  * with no second flash.
  *
  * Mapping from the old wire protocol to Fox ESP32 Firmware commands:

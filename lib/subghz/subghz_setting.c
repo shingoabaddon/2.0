@@ -456,6 +456,9 @@ bool subghz_setting_delete_custom_preset(SubGhzSetting* instance, const char* pr
 
 uint8_t* subghz_setting_get_preset_data(SubGhzSetting* instance, size_t idx) {
     furi_check(instance);
+    if(idx >= SubGhzSettingCustomPresetItemArray_size(instance->preset->data)) {
+        idx = 0;
+    }
     SubGhzSettingCustomPresetItem* item =
         SubGhzSettingCustomPresetItemArray_get(instance->preset->data, idx);
     return item->custom_preset_data;
@@ -463,6 +466,9 @@ uint8_t* subghz_setting_get_preset_data(SubGhzSetting* instance, size_t idx) {
 
 size_t subghz_setting_get_preset_data_size(SubGhzSetting* instance, size_t idx) {
     furi_check(instance);
+    if(idx >= SubGhzSettingCustomPresetItemArray_size(instance->preset->data)) {
+        idx = 0;
+    }
     SubGhzSettingCustomPresetItem* item =
         SubGhzSettingCustomPresetItemArray_get(instance->preset->data, idx);
     return item->custom_preset_data_size;

@@ -67,7 +67,7 @@ static void variable_item_list_draw_callback(Canvas* canvas, void* _model) {
             const VariableItem* item = VariableItemArray_cref(it);
             uint8_t item_y      = y_offset + (item_position * item_height);
             uint8_t item_text_y = item_y + item_height - 4;   /* Classic baseline */
-            uint8_t item_mid_y  = item_y + item_height / 2;   /* Fox centre      */
+            uint8_t item_mid_y  = item_y + item_height / 2;   /* Fox center      */
             size_t scroll_counter = 0;
 
             if(position == model->position) {

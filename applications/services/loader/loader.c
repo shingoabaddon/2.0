@@ -9,12 +9,14 @@
 #include <toolbox/path.h>
 #include <flipper_application/flipper_application.h>
 #include <loader/firmware_api/firmware_api.h>
+#include <furi/core/memmgr.h>
+#include <furi/core/memmgr_heap.h>
 
 #define TAG "Loader"
 
 #define LOADER_MAGIC_THREAD_VALUE 0xDEADBEEF
 
-#define LOADER_LOAD_WATCHDOG_TIMEOUT_MS 5000
+#define LOADER_LOAD_WATCHDOG_TIMEOUT_MS 7000
 #define LOADER_LOAD_WARN_THRESHOLD_MS 2000
 
 static void loader_still_loading_draw_callback(Canvas* canvas, void* model) {
@@ -29,6 +31,12 @@ static void loader_still_loading_draw_callback(Canvas* canvas, void* model) {
     canvas_draw_str_aligned(canvas, 64, 50, AlignCenter, AlignTop, "To Try Again");
 }
 
+static void loader_still_loading_exit_timer_callback(void* context) {
+    Loader* loader = context;
+    FURI_LOG_W(TAG, "User exited still-loading screen (load continues in background)");
+    view_holder_set_view(loader->view_holder, NULL);
+}
+
 static bool loader_still_loading_input_callback(InputEvent* event, void* context) {
     Loader* loader = context;
     if(event->key == InputKeyBack && event->type == InputTypeLong) {
@@ -39,8 +47,11 @@ static bool loader_still_loading_input_callback(InputEvent* event, void* context
         // If the app is tapped again before that happens, the new request
         // simply queues behind the still-running one rather than starting
         // a second attempt.
-        FURI_LOG_W(TAG, "User exited still-loading screen (load continues in background)");
-        view_holder_set_view(loader->view_holder, NULL);
+        //
+        // Deferred to still_loading_exit_timer instead of calling
+        // view_holder_set_view() here directly - see that field's comment
+        // in loader_i.h for why a direct call deadlocks the GUI thread.
+        furi_timer_start(loader->still_loading_exit_timer, 1);
     }
     // Consume everything else, including short Back: exiting only happens
     // on the deliberate long-press gesture above.
@@ -345,6 +356,17 @@ bool loader_get_application_name(Loader* loader, FuriString* name) {
     return result.value;
 }
 
+bool loader_get_application_id(Loader* loader, FuriString* appid) {
+    LoaderMessageBoolResult result;
+    LoaderMessage message = {
+        .type = LoaderMessageTypeGetApplicationId,
+        .application_name = appid,
+        .bool_value = &result,
+    };
+    loader_generic_synchronous_request(loader, &message);
+    return result.value;
+}
+
 bool loader_get_application_launch_path(Loader* loader, FuriString* name) {
     LoaderMessageBoolResult result;
     LoaderMessage message = {
@@ -423,6 +445,8 @@ static Loader* loader_alloc(void) {
     view_holder_attach_to_gui(loader->view_holder, loader->gui);
     loader->load_watchdog =
         furi_timer_alloc(loader_load_watchdog_callback, FuriTimerTypeOnce, loader);
+    loader->still_loading_exit_timer =
+        furi_timer_alloc(loader_still_loading_exit_timer_callback, FuriTimerTypeOnce, loader);
     loader->still_loading_view = view_alloc();
     view_set_draw_callback(loader->still_loading_view, loader_still_loading_draw_callback);
     view_set_input_callback(loader->still_loading_view, loader_still_loading_input_callback);
@@ -586,7 +610,12 @@ static LoaderMessageLoaderStatusResult loader_start_external_app(
         loader->app.fap = flipper_application_alloc(storage, firmware_api_interface);
         size_t start = furi_get_tick();
 
-        FURI_LOG_I(TAG, "Loading %s", path);
+        FURI_LOG_I(
+            TAG,
+            "Loading %s: free heap %zu, max free block %zu",
+            path,
+            memmgr_get_free_heap(),
+            memmgr_heap_get_max_free_block());
 
         FlipperApplicationPreloadStatus preload_res =
             flipper_application_preload(loader->app.fap, path);
@@ -879,13 +908,11 @@ static bool loader_do_deferred_launch(Loader* loader, LoaderDeferredLaunchRecord
 
     /* Keep spinner visible for queued SubGHz relaunches — SubGHz's viewport
      * covers it once registered; clearing early would flash the Desktop. */
+    // Exact match only - a substring check here also matches subghz_garage.fap
+    // (and any other subghz_*.fap path), which left the spinner/watchdog
+    // armed for the app's entire runtime instead of just this transition.
     bool keep_loading_view = false;
-    if(was_queued &&
-       record->name_or_path &&
-       strstr(record->name_or_path, "subghz") &&
-       !strstr(record->name_or_path, "subghz_frequency") &&
-       !strstr(record->name_or_path, "subghz_modulation") &&
-       !strstr(record->name_or_path, "subghz_raw")) {
+    if(was_queued && record->name_or_path && strcmp(record->name_or_path, "subghz") == 0) {
         keep_loading_view = true;
     }
 
@@ -913,12 +940,34 @@ static bool loader_do_deferred_launch(Loader* loader, LoaderDeferredLaunchRecord
         loader_do_next_deferred_launch_if_available(loader);
     } while(false);
 
-    if(!skip_loading_view && !keep_loading_view) {
+    // Watchdog's only job is catching a hang during the load itself - once
+    // loader_do_start_by_name() has returned (success or failure), it has
+    // nothing left to catch and must not stay armed, regardless of whether
+    // the spinner view is being kept up for visual masking.
+    if(!skip_loading_view) {
         loader_load_watchdog_disarm(loader);
+    }
+    if(!skip_loading_view && !keep_loading_view) {
         view_holder_set_view(loader->view_holder, NULL);
     }
     furi_string_free(error_message);
     return is_successful;
+}
+
+// Covers the same gap for callers that reach loader_do_start_by_name()
+// directly instead of through the deferred-launch queue above: the main
+// menu, Archive, Desktop favorites/hold-buttons and RPC all launch this
+// way, and previously saw nothing on screen while a large external .fap
+// (NFC's is the worst case) was read off the SD card.
+static void loader_show_loading_for_launch(Loader* loader, const char* app_name) {
+    view_holder_set_view(loader->view_holder, loading_get_view(loader->loading));
+    view_holder_send_to_front(loader->view_holder);
+    loader_load_watchdog_arm(loader, app_name);
+}
+
+static void loader_hide_loading_for_launch(Loader* loader) {
+    loader_load_watchdog_disarm(loader);
+    view_holder_set_view(loader->view_holder, NULL);
 }
 
 static void loader_do_app_closed(Loader* loader) {
@@ -978,6 +1027,18 @@ static bool loader_do_get_application_name(Loader* loader, FuriString* name) {
     return false;
 }
 
+static bool loader_do_get_application_id(Loader* loader, FuriString* appid) {
+    if(loader_is_application_running(loader)) {
+        const char* id = furi_thread_get_appid(furi_thread_get_id(loader->app.thread));
+        if(id) {
+            furi_string_set(appid, id);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool loader_do_get_application_launch_path(Loader* loader, FuriString* path) {
     if(loader_is_application_running(loader)) {
         furi_string_set(path, loader->app.launch_path);
@@ -1010,11 +1071,13 @@ int32_t loader_srv(void* p) {
         if(furi_message_queue_get(loader->queue, &message, FuriWaitForever) == FuriStatusOk) {
             switch(message.type) {
             case LoaderMessageTypeStartByName: {
+                loader_show_loading_for_launch(loader, message.start.name);
                 LoaderMessageLoaderStatusResult status = loader_do_start_by_name(
                     loader,
                     message.start.name,
                     message.start.args,
                     message.start.error_message); //-V595
+                loader_hide_loading_for_launch(loader);
                 *(message.status_value) = status;
                 if(status.value != LoaderStatusOk) loader_do_emit_queue_empty_event(loader);
                 api_lock_unlock(message.api_lock);
@@ -1022,8 +1085,10 @@ int32_t loader_srv(void* p) {
             }
             case LoaderMessageTypeStartByNameDetachedWithGuiError: {
                 FuriString* error_message = furi_string_alloc();
+                loader_show_loading_for_launch(loader, message.start.name);
                 LoaderMessageLoaderStatusResult status = loader_do_start_by_name(
                     loader, message.start.name, message.start.args, error_message); //-V595
+                loader_hide_loading_for_launch(loader);
                 loader_show_gui_error(status, message.start.name, error_message);
                 if(status.value != LoaderStatusOk) loader_do_emit_queue_empty_event(loader);
                 if(message.start.name) free((void*)message.start.name);
@@ -1064,6 +1129,11 @@ int32_t loader_srv(void* p) {
                     loader_do_get_application_name(loader, message.application_name);
                 api_lock_unlock(message.api_lock);
                 break;
+            case LoaderMessageTypeGetApplicationId:
+                message.bool_value->value =
+                    loader_do_get_application_id(loader, message.application_name);
+                api_lock_unlock(message.api_lock);
+                break;
             case LoaderMessageTypeGetApplicationLaunchPath:
                 message.bool_value->value =
                     loader_do_get_application_launch_path(loader, message.application_name);
@@ -1078,7 +1148,11 @@ int32_t loader_srv(void* p) {
                     bool is_fap = strstr(p, "subghz_frequency") ||
                                   strstr(p, "subghz_modulation") ||
                                   strstr(p, "subghz_raw");
-                    bool is_subghz = strstr(p, "subghz") && !is_fap;
+                    // Exact match only - a substring check here also matches
+                    // subghz_garage.fap (and any other subghz_*.fap path),
+                    // wrongly treating a fresh launch of those apps as a
+                    // return to core subghz.
+                    bool is_subghz = strcmp(p, "subghz") == 0;
                     if(is_fap) {
                         view_holder_set_view(
                             loader->view_holder,

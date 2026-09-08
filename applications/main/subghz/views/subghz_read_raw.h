@@ -60,6 +60,18 @@ void subghz_read_raw_set_status(
     float raw_threshold_rssi);
 
 /**
+ * Sets the Start-screen auto-start countdown shown as "REC (N)" on the
+ * center button. Pass 0 to clear it back to a plain "REC".
+ */
+void subghz_read_raw_set_start_countdown(SubGhzReadRAW* instance, uint8_t seconds_left);
+
+/** Returns the view's current status - used by the scene's Tick handler to
+ *  tell the idle Start screen apart from other screens that also idle with
+ *  no active RX (post-record IDLE, LoadKeyIDLE), since only Start ever runs
+ *  the auto-start countdown. */
+SubGhzReadRAWStatus subghz_read_raw_get_status(SubGhzReadRAW* instance);
+
+/**
  * Controls whether the "New" button appears in the LoadKeyIDLE screen's
  * left slot. Loading an existing file from Saved should NOT offer "New"
  * (there's no in-progress recording session to discard) — only the

@@ -34,8 +34,11 @@ typedef enum {
 } LockUsbLevel;
 
 typedef enum {
-    MenuThemeClassic = 0, // original 3-item scrolling list
-    MenuThemeFox     = 1, // FoxFW 3×2 grid
+    MenuThemeClassic  = 0, // original 3-item scrolling list
+    MenuThemeFox      = 1, // FoxFW 3×2 grid
+    MenuThemeCarousel = 2, // single scrolling row, Left/Right only
+    MenuThemeSlider   = 3, // wraparound 5-item row, Left/Right only
+    MenuThemeTiny     = 4, // 3×5 icon-only grid, app name top-left
 } MenuTheme;
 
 #define FOX_ALARM_MAX_COUNT 8

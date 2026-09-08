@@ -13,7 +13,12 @@ struct SubGhzThresholdRssi {
 
 SubGhzThresholdRssi* subghz_threshold_rssi_alloc(void) {
     SubGhzThresholdRssi* instance = malloc(sizeof(SubGhzThresholdRssi));
-    instance->threshold_rssi = SUBGHZ_RAW_THRESHOLD_MIN;
+    /* -65dBm: close-range remote, filters ambient RF noise. Matches
+     * SubGhzLastSettings' own default (subghz_last_settings.c) - this one
+     * only matters until subghz.c applies the loaded/persisted value on
+     * top of it. Kept in sync with the Garage/Gate/Other fork's copy of
+     * this same file. */
+    instance->threshold_rssi = -65.0f;
     instance->threshold_rssi_low_count = THRESHOLD_RSSI_LOW_COUNT;
     return instance;
 }

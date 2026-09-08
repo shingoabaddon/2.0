@@ -56,6 +56,7 @@ typedef struct {
     uint32_t tx_total_ticks;    /* derived from REAL duration, not pulse count */
     uint8_t  zoom_level;        /* 0 = fully zoomed out */
     uint32_t recording_ticks;  /* incremented every scene tick while in REC state */
+    uint8_t  start_countdown_sec; /* auto-start countdown shown on the Start screen */
 } SubGhzReadRAWModel;
 
 /*  Public setters                                                            */
@@ -94,6 +95,26 @@ void subghz_read_raw_set_radio_device_type(
         SubGhzReadRAWModel * model,
         { model->device_type = device_type; },
         true);
+}
+
+void subghz_read_raw_set_start_countdown(SubGhzReadRAW* instance, uint8_t seconds_left) {
+    furi_assert(instance);
+    with_view_model(
+        instance->view,
+        SubGhzReadRAWModel * model,
+        { model->start_countdown_sec = seconds_left; },
+        true);
+}
+
+SubGhzReadRAWStatus subghz_read_raw_get_status(SubGhzReadRAW* instance) {
+    furi_assert(instance);
+    SubGhzReadRAWStatus status = SubGhzReadRAWStatusIDLE;
+    with_view_model(
+        instance->view,
+        SubGhzReadRAWModel * model,
+        { status = model->status; },
+        false);
+    return status;
 }
 
 void subghz_read_raw_add_data_rssi(SubGhzReadRAW* instance, float rssi, bool trace) {
@@ -407,7 +428,7 @@ static void subghz_read_raw_draw_rssi(Canvas* canvas, SubGhzReadRAWModel* model)
 
     /* Marker position: during TX (quick-send replay) use play_pct to drive
      * the cursor from left to right.  In all other states keep the original
-     * behaviour (marks the live write head / end of recording).             */
+     * behavior (marks the live write head / end of recording).             */
     uint8_t px;
     if(model->status == SubGhzReadRAWStatusTX ||
        model->status == SubGhzReadRAWStatusTXRepeat) {
@@ -517,6 +538,45 @@ static void subghz_read_raw_draw_legacy_bargraph(Canvas* canvas, SubGhzReadRAWMo
     }
 }
 
+/* Same visual as elements_button_center(), but shifted a couple of pixels
+ * right - the countdown label ("REC (3)") is wide enough that the stock
+ * centered button's left edge butts right up against the Config button's
+ * right edge with no gap between them. Only used for the countdown label;
+ * the plain "REC" case is narrow enough to use the stock helper unshifted,
+ * same as always. */
+#define SUBGHZ_READ_RAW_COUNTDOWN_BTN_X_NUDGE 7
+static void subghz_read_raw_draw_button_center_nudged(Canvas* canvas, const char* str) {
+    const size_t button_height = 12;
+    const size_t vertical_offset = 3;
+    const size_t horizontal_offset = 1;
+    const size_t string_width = canvas_string_width(canvas, str);
+    const Icon* icon = &I_ButtonCenter_7x7;
+    const int32_t icon_h_offset = 3;
+    const int32_t icon_width_with_offset = icon_get_width(icon) + icon_h_offset;
+    const int32_t icon_v_offset = icon_get_height(icon) + vertical_offset;
+    const size_t button_width = string_width + horizontal_offset * 2 + icon_width_with_offset;
+
+    const int32_t x =
+        (canvas_width(canvas) - button_width) / 2 + SUBGHZ_READ_RAW_COUNTDOWN_BTN_X_NUDGE;
+    const int32_t y = canvas_height(canvas);
+
+    canvas_draw_box(canvas, x, y - button_height, button_width, button_height);
+
+    canvas_draw_line(canvas, x - 1, y, x - 1, y - button_height + 0);
+    canvas_draw_line(canvas, x - 2, y, x - 2, y - button_height + 1);
+    canvas_draw_line(canvas, x - 3, y, x - 3, y - button_height + 2);
+
+    canvas_draw_line(canvas, x + button_width + 0, y, x + button_width + 0, y - button_height + 0);
+    canvas_draw_line(canvas, x + button_width + 1, y, x + button_width + 1, y - button_height + 1);
+    canvas_draw_line(canvas, x + button_width + 2, y, x + button_width + 2, y - button_height + 2);
+
+    canvas_invert_color(canvas);
+    canvas_draw_icon(canvas, x + horizontal_offset, y - icon_v_offset, &I_ButtonCenter_7x7);
+    canvas_draw_str(
+        canvas, x + horizontal_offset + icon_width_with_offset, y - vertical_offset, str);
+    canvas_invert_color(canvas);
+}
+
 /*  Main draw callback                                                        */
 
 void subghz_read_raw_draw(Canvas* canvas, SubGhzReadRAWModel* model) {
@@ -537,8 +597,10 @@ void subghz_read_raw_draw(Canvas* canvas, SubGhzReadRAWModel* model) {
     canvas_draw_str_aligned(canvas, 126, 0, AlignRight, AlignTop,
                             furi_string_get_cstr(model->sample_write));
 
-    /* Thin top border — scale ticks start at y=15 so they don't overlap */
-    canvas_draw_line(canvas, 0, 14, 115, 14); /* top border */
+    /* No top border — the scale ticks drawn at y=15 (signal_mode 1/2)
+     * already read as the box's top edge; a separate flat line here
+     * only shows as a stray extra line when they're absent (signal_mode
+     * 3, the idle Start screen, which has none). */
     canvas_draw_line(canvas, 0, 48, 115, 48); /* bottom border */
     canvas_draw_line(canvas, 115, 14, 115, 48); /* right border */
     canvas_draw_line(canvas, 0, 14, 0, 48);   /* left border */
@@ -602,7 +664,13 @@ void subghz_read_raw_draw(Canvas* canvas, SubGhzReadRAWModel* model) {
 
     case SubGhzReadRAWStatusStart:
         elements_button_left(canvas, "Config");
-        elements_button_center(canvas, "REC");
+        if(model->start_countdown_sec > 0) {
+            char rec_label[16];
+            snprintf(rec_label, sizeof(rec_label), "REC (%u)", model->start_countdown_sec);
+            subghz_read_raw_draw_button_center_nudged(canvas, rec_label);
+        } else {
+            elements_button_center(canvas, "REC");
+        }
         signal_mode = 3; /* clean empty envelope — no scale/RSSI before recording */
         break;
 
@@ -880,6 +948,18 @@ void subghz_read_raw_set_status(
     case SubGhzReadRAWStatusIDLE:
         with_view_model(instance->view, SubGhzReadRAWModel * model,
             { model->status = SubGhzReadRAWStatusIDLE; }, true);
+        break;
+    case SubGhzReadRAWStatusREC:
+        /* No caller needed this until the auto-start countdown began
+         * driving this view programmatically instead of via the OK-key
+         * Start->REC transition - same reset fields that transition
+         * already applies. */
+        with_view_model(instance->view, SubGhzReadRAWModel * model, {
+            model->status = SubGhzReadRAWStatusREC;
+            model->ind_write = 0;
+            model->rssi_history_end = false;
+            model->recording_ticks = 0;
+        }, true);
         break;
     case SubGhzReadRAWStatusLoadKeyTX:
         with_view_model(instance->view, SubGhzReadRAWModel * model, {

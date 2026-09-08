@@ -357,9 +357,42 @@ void nfc_scene_mf_classic_dict_attack_on_enter(void* context) {
     nfc_poller_start(instance->poller, nfc_dict_attack_worker_callback, instance);
 }
 
+static void nfc_scene_mf_classic_dict_attack_save_new_keys(const MfClassicData* mfc_data) {
+    uint8_t sectors_total = mf_classic_get_total_sectors_num(mfc_data->type);
+    bool any_key_found = false;
+    for(uint8_t sector = 0; sector < sectors_total && !any_key_found; sector++) {
+        any_key_found = mf_classic_is_key_found(mfc_data, sector, MfClassicKeyTypeA) ||
+                        mf_classic_is_key_found(mfc_data, sector, MfClassicKeyTypeB);
+    }
+    if(!any_key_found) return;
+
+    KeysDict* user_dict = keys_dict_alloc(
+        NFC_APP_MF_CLASSIC_DICT_USER_PATH, KeysDictModeOpenAlways, sizeof(MfClassicKey));
+    if(!user_dict) return;
+
+    for(uint8_t sector = 0; sector < sectors_total; sector++) {
+        for(uint8_t key_type = 0; key_type < 2; key_type++) {
+            if(!mf_classic_is_key_found(mfc_data, sector, key_type)) continue;
+            MfClassicKey key = mf_classic_get_key(mfc_data, sector, key_type);
+            if(!keys_dict_is_key_present(user_dict, key.data, sizeof(MfClassicKey))) {
+                keys_dict_add_key(user_dict, key.data, sizeof(MfClassicKey));
+            }
+        }
+    }
+
+    keys_dict_free(user_dict);
+}
+
 static void nfc_scene_mf_classic_dict_attack_notify_read(NfcApp* instance) {
     const MfClassicData* mfc_data = nfc_poller_get_data(instance->poller);
     bool is_card_fully_read = mf_classic_is_card_read(mfc_data);
+    // Close the attack's own dict handle first so the user-dictionary write below
+    // never opens the same file concurrently with an already-open read handle.
+    if(instance->nfc_dict_context.dict) {
+        keys_dict_free(instance->nfc_dict_context.dict);
+        instance->nfc_dict_context.dict = NULL;
+    }
+    nfc_scene_mf_classic_dict_attack_save_new_keys(mfc_data);
     if(is_card_fully_read) {
         notification_message(instance->notifications, &sequence_success);
     } else {
@@ -488,7 +521,10 @@ void nfc_scene_mf_classic_dict_attack_on_exit(void* context) {
     scene_manager_set_scene_state(
         instance->scene_manager, NfcSceneMfClassicDictAttack, DictAttackStateCUIDDictInProgress);
 
-    keys_dict_free(instance->nfc_dict_context.dict);
+    if(instance->nfc_dict_context.dict) {
+        keys_dict_free(instance->nfc_dict_context.dict);
+        instance->nfc_dict_context.dict = NULL;
+    }
 
     // Free CUID bitmap if allocated
     if(instance->nfc_dict_context.cuid_key_indices_bitmap) {

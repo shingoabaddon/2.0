@@ -278,7 +278,7 @@ EvilBleScanner* evil_ble_scanner_alloc(EvilBleUart* uart, EvilBleScannerCallback
 
     evil_ble_uart_set_rx_callback(uart, evil_ble_scanner_rx_cb, scanner);
 
-    FURI_LOG_I(TAG, "Scanner initialised");
+    FURI_LOG_I(TAG, "Scanner initialized");
     return scanner;
 }
 

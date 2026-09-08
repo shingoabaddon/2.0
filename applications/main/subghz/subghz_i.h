@@ -10,11 +10,13 @@
 #include "subghz_protocol_filter.h"
 #include "subghz_modulation_filter.h"
 #include "views/subghz_view_start_grid.h"
+#include "views/subghz_view_mode_picker.h"
 #include <gui/modules/loading.h>
 #include <gui/view_holder.h>
 #include "views/subghz_read_raw.h"
 #include "views/subghz_psa_decrypt.h"
 #include "views/subghz_keeloq_decrypt.h"
+#include "views/subghz_fiat_v1_recover.h"
 
 #include <gui/gui.h>
 #include <gui/view_port.h>
@@ -27,6 +29,7 @@
 #include <gui/modules/popup.h>
 #include <gui/modules/text_input.h>
 #include <gui/modules/byte_input.h>
+#include <gui/modules/number_input.h>
 #include <gui/modules/widget.h>
 
 #include <subghz/scenes/subghz_scene.h>
@@ -77,6 +80,7 @@ struct SubGhz {
     Popup* popup;
     TextInput* text_input;
     ByteInput* byte_input;
+    NumberInput* number_input;
     Widget* widget;
     DialogsApp* dialogs;
     FuriString* file_path;
@@ -100,6 +104,7 @@ struct SubGhz {
     SubGhzProtocolFilter*         protocol_filter;
     SubGhzModulationFilter*        modulation_filter;
     SubGhzStartGrid*               start_grid;
+    SubGhzModePicker*              mode_picker;
     /* Startup loading wheel — shown immediately on launch, removed
      * when the start grid scene enters (hides apps menu + input). */
     Loading*                       startup_loading;
@@ -107,6 +112,7 @@ struct SubGhz {
     SubGhzReadRAW* subghz_read_raw;
     SubGhzViewPsaDecrypt* subghz_psa_decrypt;
     SubGhzViewKeeloqDecrypt* subghz_keeloq_decrypt;
+    SubGhzViewFiatV1Recover* subghz_fiat_v1_recover;
     bool raw_send_only;
 
     bool save_datetime_set;
@@ -154,6 +160,10 @@ struct SubGhz {
         FuriString* sig2_path;
         uint8_t learn_type;
     } keeloq_bf2;
+
+    struct {
+        uint8_t key_bytes[6];
+    } fiat_v1_key_edit;
 };
 
 void subghz_blink_start(SubGhz* subghz);

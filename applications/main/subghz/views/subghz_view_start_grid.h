@@ -15,7 +15,8 @@
 #define SGRID_IDX_KEELOQ        10
 #define SGRID_IDX_KEELOQBF      11
 #define SGRID_IDX_JAMMER        12
-#define SGRID_BTN_COUNT         13
+#define SGRID_IDX_TPMS          13
+#define SGRID_BTN_COUNT         14
 
 
 

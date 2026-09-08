@@ -1,7 +1,26 @@
 #include "gui_i.h"
+#include "elements.h"
 #include <assets_icons.h>
+#include <string.h>
+#include <storage/storage.h>
+#include <notification/notification_messages.h>
+#ifndef FURI_RAM_EXEC
+// The updater build (FURI_RAM_EXEC) links only "updater" + its "gui"/
+// "storage" requires - it never pulls in the loader service, so this
+// header (and the loader_get_application_id() call below) must stay out
+// of that build entirely, not just be dead-code-guarded at runtime.
+#include <loader/loader.h>
+#endif
 
 #define TAG "GuiSrv"
+
+// Global Back+Up-held screenshot combo. Hooked from gui_input() so it works
+// from any screen (lockscreen, fullscreen app, or windowed view) without
+// touching the view-port dispatch logic below it.
+#define GUI_SCREENSHOT_DIR         EXT_PATH("Screenshots")
+#define GUI_SCREENSHOT_HOLD_MS     1000
+#define GUI_SCREENSHOT_OVERLAY_MS  1000
+#define GUI_SCREENSHOT_BYTES       ((GUI_DISPLAY_WIDTH / 8) * GUI_DISPLAY_HEIGHT)
 
 ViewPort* gui_view_port_find_enabled(ViewPortArray_t array) {
     ViewPortArray_it_t it;
@@ -50,6 +69,8 @@ void gui_input_events_callback(const void* value, void* ctx) {
     furi_message_queue_put(gui->input_queue, value, FuriWaitForever);
     furi_thread_flags_set(gui->thread_id, GUI_THREAD_FLAG_INPUT);
 }
+
+static void gui_screenshot_draw_overlay(Gui* gui);
 
 static bool gui_redraw_fs(Gui* gui) {
     canvas_set_orientation(gui->canvas, CanvasOrientationHorizontal);
@@ -216,7 +237,9 @@ static void gui_redraw(Gui* gui) {
 
         canvas_reset(gui->canvas);
 
-        if(gui_is_lockdown(gui)) {
+        if(gui->screenshot_overlay_active) {
+            gui_screenshot_draw_overlay(gui);
+        } else if(gui_is_lockdown(gui)) {
             gui_redraw_desktop(gui);
             // Status bar drawn first, then border on top.
             if(!gui->hide_status_bar) {
@@ -252,6 +275,241 @@ static void gui_redraw(Gui* gui) {
     gui_unlock(gui);
 }
 
+// Converts the canvas's raw u8g2 tile-format framebuffer (column-major, one
+// byte per 8 vertical pixels, LSB = top of that band - see
+// u8g2_ll_hvline_vertical_top_lsb) into standard row-major XBM bytes (one
+// byte per 8 horizontal pixels, LSB = leftmost pixel), the same format
+// desktop.c's wallpaper XBM reader/writer/drawer already uses throughout.
+static void gui_screenshot_to_xbm(const uint8_t* fb, uint8_t* xbm) {
+    memset(xbm, 0, GUI_SCREENSHOT_BYTES);
+    const size_t tile_width = GUI_DISPLAY_WIDTH / 8;
+    for(size_t y = 0; y < GUI_DISPLAY_HEIGHT; y++) {
+        size_t fb_row = (y & ~(size_t)7) * tile_width;
+        for(size_t x = 0; x < GUI_DISPLAY_WIDTH; x++) {
+            if(fb[fb_row + x] & (1 << (y & 7))) {
+                xbm[(y * tile_width) + (x / 8)] |= (1 << (x % 8));
+            }
+        }
+    }
+}
+
+// Same ".xbm" text-header format desktop.c's wallpaper XBM writer uses.
+static void gui_screenshot_write_xbm_text(File* file, const uint8_t* raw, size_t len) {
+    static const char header[] =
+        "#define screenshot_width 128\n"
+        "#define screenshot_height 64\n"
+        "static unsigned char screenshot_bits[] = {\n";
+    storage_file_write(file, header, strlen(header));
+
+    char line[8];
+    for(size_t i = 0; i < len; i++) {
+        bool last = (i + 1 == len);
+        bool eol = ((i + 1) % 12 == 0) || last;
+        int n = snprintf(line, sizeof(line), last ? "0x%02x" : "0x%02x,", raw[i]);
+        storage_file_write(file, line, n);
+        storage_file_write(file, eol ? "\n" : " ", 1);
+    }
+
+    static const char footer[] = "};\n";
+    storage_file_write(file, footer, strlen(footer));
+}
+
+// LED flashes blue twice, with a short vibration on the second flash.
+static const NotificationSequence sequence_screenshot_saved = {
+    &message_blue_255,
+    &message_delay_100,
+    &message_blue_0,
+    &message_delay_100,
+    &message_blue_255,
+    &message_vibro_on,
+    &message_delay_100,
+    &message_blue_0,
+    &message_vibro_off,
+    NULL,
+};
+
+// ~18x14px procedurally-drawn camera glyph - no compiled icon asset exists
+// for this in the asset set, so it's built from raw canvas primitives.
+static void gui_screenshot_draw_camera_icon(Canvas* canvas, int32_t x, int32_t y) {
+    canvas_draw_rframe(canvas, x, y + 3, 18, 11, 2);
+    canvas_draw_box(canvas, x + 3, y, 6, 4);
+    canvas_draw_circle(canvas, x + 9, y + 8, 3);
+    canvas_draw_dot(canvas, x + 9, y + 8);
+    canvas_draw_box(canvas, x + 14, y + 5, 2, 2);
+}
+
+// Small L-shaped accent marks just outside each corner of the box, drawn in
+// white so they stand out against the black backdrop the overlay is
+// composited over.
+static void
+    gui_screenshot_draw_corner_borders(Canvas* canvas, int32_t x, int32_t y, int32_t w, int32_t h) {
+    const int32_t len = 6, off = 3;
+    canvas_set_color(canvas, ColorWhite);
+    canvas_draw_line(canvas, x - off, y - off, x - off + len, y - off);
+    canvas_draw_line(canvas, x - off, y - off, x - off, y - off + len);
+    canvas_draw_line(canvas, x + w + off, y - off, x + w + off - len, y - off);
+    canvas_draw_line(canvas, x + w + off, y - off, x + w + off, y - off + len);
+    canvas_draw_line(canvas, x - off, y + h + off, x - off + len, y + h + off);
+    canvas_draw_line(canvas, x - off, y + h + off, x - off, y + h + off - len);
+    canvas_draw_line(canvas, x + w + off, y + h + off, x + w + off - len, y + h + off);
+    canvas_draw_line(canvas, x + w + off, y + h + off, x + w + off, y + h + off - len);
+    canvas_set_color(canvas, ColorBlack);
+}
+
+// Draws the "Screenshot ... Saved" confirmation box. Takes over the whole
+// frame (highest priority in gui_redraw()) so it can't be stomped by an
+// app's own redraw while the overlay's timer is running.
+static void gui_screenshot_draw_overlay(Gui* gui) {
+    Canvas* canvas = gui->canvas;
+    canvas_set_orientation(canvas, CanvasOrientationHorizontal);
+    canvas_frame_set(canvas, 0, 0, GUI_DISPLAY_WIDTH, GUI_DISPLAY_HEIGHT);
+
+    const int32_t box_x = 10, box_y = 4, box_w = 108, box_h = 56;
+    const int32_t cx = box_x + box_w / 2;
+
+    canvas_set_color(canvas, ColorWhite);
+    canvas_draw_box(canvas, box_x, box_y, box_w, box_h);
+    canvas_set_color(canvas, ColorBlack);
+    canvas_draw_frame(canvas, box_x, box_y, box_w, box_h);
+    gui_screenshot_draw_corner_borders(canvas, box_x, box_y, box_w, box_h);
+
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str_aligned(canvas, cx, box_y + 5, AlignCenter, AlignTop, "Screenshot");
+
+    gui_screenshot_draw_camera_icon(canvas, cx - 9, box_y + 21);
+
+    canvas_draw_str_aligned(canvas, cx, box_y + 41, AlignCenter, AlignTop, "Saved");
+}
+
+static void gui_screenshot_overlay_timeout(void* context) {
+    Gui* gui = context;
+    gui_lock(gui);
+    gui->screenshot_overlay_active = false;
+    gui_unlock(gui);
+    gui_update(gui);
+}
+
+// Builds "Screenshot_<appid>_YYYYMMDD_HHMMSS" (no extension). appid is the
+// manifest id of whatever app is currently running (e.g. "nfc",
+// "subghz_garage"), or "desktop" when nothing is loaded (idle home/lock
+// screen - loader has no running app in that case) - and always "desktop"
+// in the updater build (FURI_RAM_EXEC), which never links the loader
+// service at all.
+static void gui_screenshot_make_name(char* name, size_t max_len) {
+    FuriString* appid = furi_string_alloc_set("desktop");
+#ifndef FURI_RAM_EXEC
+    Loader* loader = furi_record_open(RECORD_LOADER);
+    if(!loader_get_application_id(loader, appid) || furi_string_empty(appid)) {
+        furi_string_set(appid, "desktop");
+    }
+    furi_record_close(RECORD_LOADER);
+#endif
+
+    DateTime dt;
+    furi_hal_rtc_get_datetime(&dt);
+    snprintf(
+        name,
+        max_len,
+        "Screenshot_%s_%04d%02d%02d_%02d%02d%02d",
+        furi_string_get_cstr(appid),
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second);
+    furi_string_free(appid);
+}
+
+static void gui_screenshot_capture(Gui* gui) {
+    // Set BEFORE the (synchronous, blocking) file write below - not just
+    // after it succeeds - so gui_input()'s suppression check covers the
+    // save itself too, not only the "Saved" overlay that follows it. This
+    // whole function runs on the GUI thread, so a slow SD write here would
+    // otherwise leave the screen frozen with zero visual feedback while
+    // still silently passing any button presses straight through to
+    // whatever app is running underneath - invisible until the overlay
+    // clears, which is what let a stray Back during that window navigate
+    // further than the user intended.
+    gui_lock(gui);
+    gui->screenshot_overlay_active = true;
+    gui_unlock(gui);
+
+    uint8_t xbm[GUI_SCREENSHOT_BYTES];
+    gui_screenshot_to_xbm(canvas_get_buffer(gui->canvas), xbm);
+
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_simply_mkdir(storage, GUI_SCREENSHOT_DIR);
+
+    char name[64];
+    gui_screenshot_make_name(name, sizeof(name));
+    FuriString* path = furi_string_alloc_printf("%s/%s.xbm", GUI_SCREENSHOT_DIR, name);
+
+    bool saved = false;
+    File* file = storage_file_alloc(storage);
+    if(storage_file_open(file, furi_string_get_cstr(path), FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        gui_screenshot_write_xbm_text(file, xbm, GUI_SCREENSHOT_BYTES);
+        saved = true;
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+    furi_string_free(path);
+    furi_record_close(RECORD_STORAGE);
+
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    notification_message(notifications, saved ? &sequence_screenshot_saved : &sequence_error);
+    furi_record_close(RECORD_NOTIFICATION);
+
+    if(saved) {
+        // Already set true above - just start the overlay's own display
+        // timer, which clears it (and un-suppresses input) when it fires.
+        furi_timer_start(
+            gui->screenshot_overlay_timer, furi_ms_to_ticks(GUI_SCREENSHOT_OVERLAY_MS));
+    } else {
+        // No overlay to show - stop suppressing input right away instead
+        // of waiting on a timer that was never started.
+        gui_lock(gui);
+        gui->screenshot_overlay_active = false;
+        gui_unlock(gui);
+    }
+    gui_update(gui);
+
+    FURI_LOG_I(TAG, "Screenshot %s: %s", saved ? "saved" : "FAILED", name);
+}
+
+// Tracks how long Back+Up have been continuously held via gui->ongoing_input
+// (already kept up to date by gui_input() below), fires the capture once
+// per hold after GUI_SCREENSHOT_HOLD_MS, and reports whether the current
+// event should be swallowed instead of reaching the active view port.
+// Suppression starts the instant both keys are held together - so Back's
+// own Short/Long-press behavior (e.g. "exit app") never fires alongside a
+// screenshot attempt - and only ends once both keys are fully released.
+static bool gui_screenshot_check_combo(Gui* gui, const InputEvent* input_event) {
+    static uint32_t combo_start = 0;
+    static bool combo_fired = false;
+    static bool combo_active = false;
+
+    const uint8_t combo_mask = (1 << InputKeyBack) | (1 << InputKeyUp);
+    bool both_held = (gui->ongoing_input & combo_mask) == combo_mask;
+    bool either_held = (gui->ongoing_input & combo_mask) != 0;
+
+    if(both_held) {
+        combo_active = true;
+        if(combo_start == 0) {
+            combo_start = furi_get_tick();
+        } else if(!combo_fired && (furi_get_tick() - combo_start) >= GUI_SCREENSHOT_HOLD_MS) {
+            combo_fired = true;
+            gui_screenshot_capture(gui);
+        }
+    } else if(!either_held) {
+        combo_start = 0;
+        combo_fired = false;
+        combo_active = false;
+    }
+
+    return combo_active && (input_event->key == InputKeyBack || input_event->key == InputKeyUp);
+}
+
 static void gui_input(Gui* gui, InputEvent* input_event) {
     furi_assert(gui);
     furi_assert(input_event);
@@ -268,6 +526,20 @@ static void gui_input(Gui* gui, InputEvent* input_event) {
             input_get_key_name(input_event->key),
             input_get_type_name(input_event->type),
             (void*)input_event->sequence);
+        return;
+    }
+
+    if(gui_screenshot_check_combo(gui, input_event)) {
+        return;
+    }
+
+    // Swallow everything (not just Back/Up) while a screenshot is being
+    // saved or its "Saved" confirmation is on screen - both happen with no
+    // app-visible indication a screenshot is even in progress, so any
+    // button press here would otherwise reach the app underneath
+    // invisibly and could navigate it further than the user intended
+    // before the overlay clears and reveals the result.
+    if(gui->screenshot_overlay_active) {
         return;
     }
 
@@ -522,6 +794,9 @@ Gui* gui_alloc(void) {
     gui->input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
     gui->input_events = furi_record_open(RECORD_INPUT_EVENTS);
     furi_pubsub_subscribe(gui->input_events, gui_input_events_callback, gui);
+
+    gui->screenshot_overlay_timer =
+        furi_timer_alloc(gui_screenshot_overlay_timeout, FuriTimerTypeOnce, gui);
 
     return gui;
 }

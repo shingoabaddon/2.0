@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.26]
+### Added
+- New subsystems: Network, Gps
+- Network messages: ConnectRequest/Response, SendRequest/Response, ReceiveData,
+  CloseRequest/Response, StateChanged, HttpRequest/Response,
+  WebSocketOpenRequest - lets a connected companion device (phone/PC) proxy
+  TCP/UDP/HTTP/WebSocket connections for the Flipper
+- Gps messages: StreamStartRequest, StreamStopRequest, LocationRequest,
+  Location (fixed-point sint32/uint32 lat/lon/altitude) - lets a connected
+  companion device report its location to the Flipper
+
 ## [0.25]
 ### Added
 - App: New AppButtonPressReleaseRequest, presses and releases a button in one request

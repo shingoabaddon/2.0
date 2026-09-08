@@ -33,6 +33,30 @@ static void desktop_scene_clock_lock_backlight_callback(void* context, bool turn
     }
 }
 
+// Up/Down brightness quick-adjust, same momentary-override spirit as the
+// Left/Right backlight shortcut above, but this one changes the actual
+// saved LCD Backlight setting (same 21-step 0-100%/5% scale as Settings >
+// Notifications > LCD Backlight) so the level sticks after leaving the
+// clock screen.
+#define CLOCK_LOCK_BRIGHTNESS_STEP (0.05f)
+
+static void desktop_scene_clock_lock_brightness_callback(void* context, bool increase) {
+    Desktop* desktop = context;
+    NotificationApp* notification = desktop->notification;
+
+    float brightness = notification->settings.display_brightness;
+    brightness += increase ? CLOCK_LOCK_BRIGHTNESS_STEP : -CLOCK_LOCK_BRIGHTNESS_STEP;
+    if(brightness > 1.0f) brightness = 1.0f;
+    if(brightness < 0.0f) brightness = 0.0f;
+    notification->settings.display_brightness = brightness;
+
+    notification_message(notification, &sequence_display_backlight_force_on);
+    notification_message_save_settings(notification);
+
+    desktop_clock_lock_show_brightness(
+        desktop->clock_lock_view, (uint8_t)(brightness * 100.0f + 0.5f));
+}
+
 // Ticks once a second while this screen is showing - re-asserts the
 // backlight so the normal auto-off timer never gets a chance to fire when
 // "Keep Backlight On" is enabled. Skipped while the user has manually
@@ -55,6 +79,8 @@ void desktop_scene_clock_lock_on_enter(void* context) {
     desktop_clock_lock_set_callback(desktop->clock_lock_view, desktop_scene_clock_lock_exit_callback, desktop);
     desktop_clock_lock_set_backlight_callback(
         desktop->clock_lock_view, desktop_scene_clock_lock_backlight_callback, desktop);
+    desktop_clock_lock_set_brightness_callback(
+        desktop->clock_lock_view, desktop_scene_clock_lock_brightness_callback, desktop);
     desktop_clock_lock_set_tick_callback(
         desktop->clock_lock_view, desktop_scene_clock_lock_tick_callback, desktop);
 
@@ -91,5 +117,6 @@ void desktop_scene_clock_lock_on_exit(void* context) {
     desktop->clock_lock_backlight_manually_off = false;
     desktop_clock_lock_set_callback(desktop->clock_lock_view, NULL, NULL);
     desktop_clock_lock_set_backlight_callback(desktop->clock_lock_view, NULL, NULL);
+    desktop_clock_lock_set_brightness_callback(desktop->clock_lock_view, NULL, NULL);
     desktop_clock_lock_set_tick_callback(desktop->clock_lock_view, NULL, NULL);
 }

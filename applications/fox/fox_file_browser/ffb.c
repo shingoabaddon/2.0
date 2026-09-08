@@ -19,6 +19,7 @@ typedef enum {
     ViewFavourites = 2,
     ViewMenu       = 3,
     ViewTextInput  = 4,
+    ViewImage      = 5,
 } FFVViewId;
 
 typedef enum { MenuRun=0, MenuPin=1, MenuRename=2, MenuDelete=3 } FFVMenuAction;
@@ -32,13 +33,14 @@ typedef enum { TextInputRename=0, TextInputSearch=1 } FFVTextInputMode;
 typedef enum {
     TypeFolder, TypeSubGhz, TypeSubGhzRemote, TypeNfc, TypeInfrared,
     TypeLFRFID, TypeBadUsb, TypeIButton, TypeU2F, TypeApp, TypeUpdate,
-    TypeScript, TypeSettings, TypeMusic, TypeFile, TypeUnknown,
+    TypeScript, TypeSettings, TypeMusic, TypeFile, TypeImage, TypeBmp, TypeUnknown,
 } FFVFileType;
 
 #define ROW_HEADER_H  14
 #define ROW_ITEM_H    12
 #define ROW_VISIBLE    4
 #define MENU_MAX_ITEMS 4
+#define MENU_TOAST_MS   1800 /* ms the "convert first" reminder stays on screen */
 
 #define FAV_ROW_H        22
 #define FAV_ROW_VIS       2
@@ -46,6 +48,14 @@ typedef enum {
 
 #define SEARCH_MAX_RESULTS 200
 #define SEARCH_NAME_MAX    128
+
+/* Same 128x64 1-bit screenshot format gui_screenshot_to_xbm() writes (see
+ * applications/services/gui/gui.c) - parser below is the same text-XBM
+ * state machine desktop_parse_xbm_file() and the old standalone Fox Image
+ * Viewer app used, re-hosted here now that the viewer lives inside FFB. */
+#define IMG_W     128
+#define IMG_H     64
+#define IMG_BYTES ((IMG_W / 8) * IMG_H)
 
 typedef struct {
     Gui*            gui;
@@ -77,6 +87,27 @@ typedef struct {
     uint8_t         menu_count;
     uint8_t         menu_selected;
     bool            menu_from_favs;
+    /* When a file's extension has more than one candidate app, MenuRun
+     * repopulates menu_labels/menu_actions in place with app names instead
+     * of launching directly - this flag distinguishes that "Open With" sub-
+     * menu from the normal File Options menu (Run/Pin/Rename/Delete) reusing
+     * the same view. app_picker_targets is the parallel array of actual
+     * loader launch targets, since menu_actions can only hold one
+     * FFVMenuAction (MenuRun, for every row) while in this mode. Usually
+     * an internal app's display name (the loader resolves those against
+     * its own built-in table, same as ffv_app_mapping[] below) - but for
+     * a genuinely-external .fap that only exists as a file on the SD
+     * card (like Fox XBM Converter) this holds its full EXT_PATH()
+     * instead, since the loader can only find an external app by path,
+     * never by name. Sized for that longer case. */
+    bool            menu_is_app_picker;
+    char            app_picker_targets[MENU_MAX_ITEMS][48];
+    /* TypeBmp's "View" doesn't actually open anything (FFB can't render a
+     * .bmp) - it shows a brief on-screen reminder instead, timed by this
+     * one-shot timer, while leaving the Run menu exactly as it was
+     * underneath so "View" is still the selected row once it clears. */
+    bool            menu_toast_active;
+    FuriTimer*      menu_toast_timer;
 
     FFVListSource   list_source;
     bool            searching;
@@ -86,6 +117,14 @@ typedef struct {
     size_t          fav_count;
     size_t          fav_selected;
     size_t          fav_scroll;
+
+    View*           image_view;
+    FuriString**    image_list;
+    size_t          image_count;
+    size_t          image_index;
+    bool            image_loaded;
+    bool            image_from_favs;
+    uint8_t         image_bitmap[IMG_BYTES];
 } FFVApp;
 
 static FFVApp* s_ffv_ctx = NULL;
@@ -103,6 +142,8 @@ static void ffv_go_search_input(FFVApp* app);
 static void ffv_start_build_items(FFVApp* app);
 static bool ffv_favorites_non_empty(FFVApp* app);
 static void ffv_search_done(void* ctx);
+static void ffv_go_image_view(FFVApp* app);
+static void ffv_image_list_free(FFVApp* app);
 
 static FFVFileType ffv_type_from_path(const char* path) {
     const char* s = strrchr(path, '/');
@@ -120,7 +161,13 @@ static FFVFileType ffv_type_from_path(const char* path) {
     if(!strcmp(d,".fap"))                              return TypeApp;
     if(!strcmp(d,".fuf")||!strcmp(d,".tgz")||!strcmp(d,".tar")) return TypeUpdate;
     if(!strcmp(d,".jss")||!strcmp(d,".js"))            return TypeScript;
-    if(!strcmp(d,".mp3")||!strcmp(d,".wav"))           return TypeMusic;
+    /* MP3 Player (applications/system/mp3_player) only decodes .mp3 - no
+     * .wav support in its decoder at all, so .wav isn't listed here; an
+     * unmapped extension just falls through to TypeUnknown (no Run entry)
+     * rather than offering a Run that does nothing. */
+    if(!strcmp(d,".mp3"))                              return TypeMusic;
+    if(!strcmp(d,".xbm"))                              return TypeImage;
+    if(!strcmp(d,".bmp"))                              return TypeBmp;
     if(!strcmp(d,".txt")||!strcmp(d,".csv"))           return TypeFile;
     return TypeUnknown;
 }
@@ -142,29 +189,67 @@ static const uint8_t* ffv_icon(FFVFileType t) {
     case TypeSettings:     return I_settings_10px.frames[0];
     case TypeMusic:        return I_music_10px.frames[0];
     case TypeFile:         return I_file_10px.frames[0];
+    case TypeImage:        return I_image_10px.frames[0];
+    case TypeBmp:          return I_image_10px.frames[0];
     default:               return I_unknown_10px.frames[0];
     }
 }
 
-static const char* ffv_app_for(FFVFileType t) {
-    switch(t){
-    case TypeSubGhz:       return "Sub-GHz";
-    case TypeSubGhzRemote: return "Sub-GHz Remote";
-    case TypeNfc:          return "NFC";
-    case TypeInfrared:     return "Infrared";
-    case TypeLFRFID:       return "125 kHz RFID";
-    case TypeBadUsb:       return "Bad USB";
-    case TypeIButton:      return "iButton";
-    case TypeU2F:          return "U2F";
-    case TypeUpdate:       return "UpdaterApp";
-    case TypeScript:       return "JS Runner";
-    case TypeMusic:        return "Music Player";
-    default:               return NULL;
+/* Extension -> candidate app(s), by display name (app.fam's "name" field -
+ * loader matches internal apps by name-or-appid, external apps by name
+ * only, so display name works for both). Most types have exactly one
+ * candidate; TypeFile (.txt/.csv) is written as a real list on purpose -
+ * FlipNote is the only entry today, but if a second text-file app is ever
+ * added, listing it here is the whole change needed for ffv_do_action()'s
+ * ambiguous-Run picker (below) to start offering both by name instead of
+ * guessing. TypeUpdate/TypeApp/TypeImage/TypeBmp are handled as special
+ * cases directly in ffv_do_action() (not launchable external apps in the
+ * usual sense - TypeImage/TypeBmp offer Fox XBM Converter when its .fap
+ * is installed, falling back to FFB's own image-viewer view for TypeImage
+ * otherwise) and aren't listed here. */
+#define FFV_MAX_APPS_PER_TYPE MENU_MAX_ITEMS
+typedef struct {
+    FFVFileType type;
+    const char* app_names[FFV_MAX_APPS_PER_TYPE];
+    uint8_t count;
+} FFVAppMapping;
+
+static const FFVAppMapping ffv_app_mapping[] = {
+    {TypeSubGhz,       {"Sub-GHz"},         1},
+    {TypeSubGhzRemote, {"Sub-GHz Remote"},  1},
+    {TypeNfc,          {"NFC"},             1},
+    {TypeInfrared,     {"Infrared"},        1},
+    {TypeLFRFID,       {"125 kHz RFID"},    1},
+    {TypeBadUsb,       {"Bad USB"},         1},
+    {TypeIButton,      {"iButton"},         1},
+    {TypeU2F,          {"U2F"},             1},
+    {TypeScript,       {"JS Runner"},       1},
+    {TypeMusic,        {"MP3 Player"},      1},
+    {TypeFile,         {"FlipNote"},        1},
+};
+
+/* Fills out[] with up to FFV_MAX_APPS_PER_TYPE candidate app names for t,
+ * returns how many. 0 means "nothing can Run this type" (folders,
+ * TypeUnknown, or any type deliberately left out of the table above). */
+static uint8_t ffv_apps_for(FFVFileType t, const char* out[FFV_MAX_APPS_PER_TYPE]) {
+    for(size_t i = 0; i < COUNT_OF(ffv_app_mapping); i++) {
+        if(ffv_app_mapping[i].type == t) {
+            for(uint8_t j = 0; j < ffv_app_mapping[i].count; j++) out[j] = ffv_app_mapping[i].app_names[j];
+            return ffv_app_mapping[i].count;
+        }
     }
+    return 0;
 }
 
 #define FAV_PATH EXT_PATH("favorites.txt")
 #define FAV_TMP  EXT_PATH("favorites.txt.tmp")
+
+/* Optional companion app: if Fox XBM Converter is installed, .xbm/.bmp
+ * files offer to launch it instead of (or alongside) FFB's built-in image
+ * viewer. Gated at runtime via storage_file_exists() so FFB behaves exactly
+ * as before when the converter hasn't been built/installed. */
+#define FOX_XBM_CONVERTER_APP_NAME "Fox XBM Converter"
+#define FOX_XBM_CONVERTER_FAP_PATH EXT_PATH("apps/Fox/fox_xbm_converter.fap")
 
 static bool ffv_is_pinned(Storage* st, const char* path) {
     File* f = storage_file_alloc(st);
@@ -419,6 +504,144 @@ static void ffv_join_path(char* out, size_t out_size, const char* dir, const cha
     snprintf(out, out_size, "%.*s/%s", (int)dlen, dir, name);
 }
 
+static uint8_t ffv_hex2byte(char hi, char lo) {
+    uint8_t h = (hi >= 'a') ? (uint8_t)(hi - 'a' + 10) :
+                (hi >= 'A') ? (uint8_t)(hi - 'A' + 10) : (uint8_t)(hi - '0');
+    uint8_t l = (lo >= 'a') ? (uint8_t)(lo - 'a' + 10) :
+                (lo >= 'A') ? (uint8_t)(lo - 'A' + 10) : (uint8_t)(lo - '0');
+    return (h << 4) | l;
+}
+
+/* Same text-XBM parse state machine as desktop_parse_xbm_file() - scans
+ * for '{', pulls every 0xNN value. Returns true only on a full, exact-size
+ * parse. */
+static bool ffv_parse_xbm(Storage* storage, const char* path, uint8_t* out) {
+    File* file = storage_file_alloc(storage);
+    if(!storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        storage_file_free(file);
+        return false;
+    }
+
+    size_t count = 0;
+    uint8_t state = 0; /* 0=scan '{', 1=scan '0', 2=expect 'x', 3=hi digit, 4=lo digit */
+    char hi_digit = 0;
+    bool finished = false;
+
+    uint8_t chunk[256];
+    uint16_t n;
+
+    while(!finished && count < IMG_BYTES &&
+          (n = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
+        for(uint16_t i = 0; i < n && count < IMG_BYTES && !finished; i++) {
+            char c = (char)chunk[i];
+            switch(state) {
+            case 0:
+                if(c == '{') state = 1;
+                break;
+            case 1:
+                if(c == '}') { finished = true; break; }
+                if(c == '0') state = 2;
+                break;
+            case 2:
+                state = (c == 'x' || c == 'X') ? 3 : 1;
+                break;
+            case 3:
+                hi_digit = c;
+                state = 4;
+                break;
+            case 4:
+                out[count++] = ffv_hex2byte(hi_digit, c);
+                state = 1;
+                break;
+            }
+        }
+    }
+
+    storage_file_close(file);
+    storage_file_free(file);
+
+    return count == IMG_BYTES;
+}
+
+static int ffv_path_cmp(const void* a, const void* b) {
+    FuriString* const* sa = a;
+    FuriString* const* sb = b;
+    return strcmp(furi_string_get_cstr(*sa), furi_string_get_cstr(*sb));
+}
+
+static void ffv_image_list_free(FFVApp* app) {
+    for(size_t i = 0; i < app->image_count; i++) furi_string_free(app->image_list[i]);
+    free(app->image_list);
+    app->image_list = NULL;
+    app->image_count = 0;
+    app->image_index = 0;
+}
+
+/* Scans current_path's parent folder for sibling .xbm files (non-recursive),
+ * sorts them alphabetically, and finds current_path's own index within
+ * that list - this is what lets Left/Right cycle through them in order. */
+static void ffv_image_list_build(FFVApp* app, const char* current_path) {
+    ffv_image_list_free(app);
+
+    FuriString* dir = furi_string_alloc();
+    const char* sl = strrchr(current_path, '/');
+    if(sl && sl > current_path) {
+        furi_string_set_strn(dir, current_path, (size_t)(sl - current_path));
+    } else {
+        furi_string_set_str(dir, EXT_PATH(""));
+    }
+
+    File* d = storage_file_alloc(app->storage);
+    FileInfo info;
+    char name[256];
+    size_t cap = 0;
+    if(storage_dir_open(d, furi_string_get_cstr(dir))) {
+        while(storage_dir_read(d, &info, name, sizeof(name))) {
+            if(info.flags & FSF_DIRECTORY) continue;
+            size_t nlen = strlen(name);
+            if(nlen < 5 || strcmp(name + nlen - 4, ".xbm") != 0) continue;
+            if(app->image_count == cap) {
+                cap = cap ? cap * 2 : 8;
+                app->image_list = realloc(app->image_list, cap * sizeof(FuriString*));
+            }
+            char full[300];
+            ffv_join_path(full, sizeof(full), furi_string_get_cstr(dir), name);
+            app->image_list[app->image_count++] = furi_string_alloc_set_str(full);
+        }
+    }
+    storage_dir_close(d);
+    storage_file_free(d);
+    furi_string_free(dir);
+
+    /* qsort() is disabled in this firmware's api_symbols.csv (libc functions
+     * are individually gated), so a plain insertion sort is used instead -
+     * the sibling-image lists this sorts are always small. */
+    for(size_t i = 1; i < app->image_count; i++) {
+        FuriString* key = app->image_list[i];
+        size_t j = i;
+        while(j > 0 && ffv_path_cmp(&app->image_list[j - 1], &key) > 0) {
+            app->image_list[j] = app->image_list[j - 1];
+            j--;
+        }
+        app->image_list[j] = key;
+    }
+
+    app->image_index = 0;
+    for(size_t i = 0; i < app->image_count; i++) {
+        if(!strcmp(furi_string_get_cstr(app->image_list[i]), current_path)) {
+            app->image_index = i;
+            break;
+        }
+    }
+}
+
+static void ffv_image_load_current(FFVApp* app) {
+    app->image_loaded = false;
+    if(app->image_count == 0) return;
+    const char* path = furi_string_get_cstr(app->image_list[app->image_index]);
+    app->image_loaded = ffv_parse_xbm(app->storage, path, app->image_bitmap);
+}
+
 static void ffv_do_search(FFVApp* app, const char* needle){
     ffv_favs_free(app);
     if(!needle || !needle[0]) return;
@@ -580,14 +803,22 @@ static void ffv_menu_draw_cb(Canvas* canvas, void* model){
     UNUSED(model);
     FFVApp* app=s_ffv_ctx; if(!app) return;
     canvas_clear(canvas);
+    if(app->menu_toast_active){
+        canvas_set_font(canvas,FontSecondary);
+        canvas_draw_str_aligned(canvas,64,26,AlignCenter,AlignCenter,"Convert to XBM to view");
+        canvas_draw_str_aligned(canvas,64,38,AlignCenter,AlignCenter,"on Flipper Zero");
+        return;
+    }
     canvas_set_font(canvas,FontPrimary);
-    canvas_draw_str_aligned(canvas,64,2,AlignCenter,AlignTop,"File Options");
+    canvas_draw_str_aligned(canvas,64,2,AlignCenter,AlignTop,
+                             app->menu_is_app_picker?"Open With":"File Options");
     canvas_set_font(canvas,FontSecondary);
     for(uint8_t i=0;i<app->menu_count;i++)
         ffv_draw_row(canvas,i,app->menu_labels[i],i==app->menu_selected);
 }
 static bool ffv_menu_input_cb(InputEvent* ev, void* ctx){
     FFVApp* app=(FFVApp*)ctx;
+    if(app->menu_toast_active) return true; /* ignore input while the reminder is showing */
     if(ev->type!=InputTypeShort && ev->type!=InputTypeRepeat) return false;
     switch(ev->key){
     case InputKeyUp:
@@ -606,12 +837,106 @@ static bool ffv_menu_input_cb(InputEvent* ev, void* ctx){
     default: return false;
     }
 }
+static void ffv_menu_toast_timer_cb(void* ctx){
+    FFVApp* app=(FFVApp*)ctx;
+    app->menu_toast_active=false;
+    with_view_model(app->menu_view,uint8_t* _m,{UNUSED(_m);},true);
+}
+static void ffv_show_menu_toast(FFVApp* app){
+    app->menu_toast_active=true;
+    furi_timer_start(app->menu_toast_timer, MENU_TOAST_MS);
+    with_view_model(app->menu_view,uint8_t* _m,{UNUSED(_m);},true);
+}
+
+static void ffv_image_draw_cb(Canvas* canvas, void* model){
+    UNUSED(model);
+    FFVApp* app=s_ffv_ctx; if(!app) return;
+    canvas_clear(canvas);
+    if(app->image_loaded){
+        canvas_draw_xbm(canvas, 0, 0, IMG_W, IMG_H, app->image_bitmap);
+    } else {
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str_aligned(canvas, 64, 32, AlignCenter, AlignCenter, "Can't open image");
+    }
+}
+static bool ffv_image_input_cb(InputEvent* ev, void* ctx){
+    FFVApp* app=(FFVApp*)ctx;
+    if(ev->type!=InputTypeShort) return false;
+    if(app->image_count==0) return false;
+    switch(ev->key){
+    case InputKeyLeft:
+        app->image_index = (app->image_index==0) ? app->image_count-1 : app->image_index-1;
+        ffv_image_load_current(app);
+        with_view_model(app->image_view,uint8_t* _m,{UNUSED(_m);},true);
+        return true;
+    case InputKeyRight:
+        app->image_index = (app->image_index+1)%app->image_count;
+        ffv_image_load_current(app);
+        with_view_model(app->image_view,uint8_t* _m,{UNUSED(_m);},true);
+        return true;
+    case InputKeyBack:
+        return false;
+    default: return false;
+    }
+}
+
+static void ffv_go_image_view(FFVApp* app){
+    const char* path = furi_string_get_cstr(app->selected_path);
+    ffv_image_list_build(app, path);
+    ffv_image_load_current(app);
+    app->image_from_favs = app->menu_from_favs;
+    app->current_view = ViewImage;
+    view_dispatcher_switch_to_view(app->view_dispatcher, ViewImage);
+}
 
 static bool ffv_nav_callback(void* ctx){
     FFVApp* app=(FFVApp*)ctx;
     switch(app->current_view){
+    case ViewImage: {
+        /* Back always returns to the list this was opened from, with the
+         * image currently on screen selected - if Left/Right cycled to a
+         * different file than the one Run was pressed on, that's the one
+         * that should end up highlighted, not the original entry point. */
+        if(app->image_count > 0) {
+            furi_string_set(app->selected_path, app->image_list[app->image_index]);
+        }
+        ffv_image_list_free(app);
+        if(app->image_from_favs) {
+            const char* cur = furi_string_get_cstr(app->selected_path);
+            for(size_t i = 0; i < app->fav_count; i++) {
+                if(!strcmp(furi_string_get_cstr(app->fav_list[i]), cur)) {
+                    app->fav_selected = i;
+                    if(app->fav_selected < app->fav_scroll) {
+                        app->fav_scroll = app->fav_selected;
+                    } else if(app->fav_selected >= app->fav_scroll + FAV_ROW_VIS) {
+                        app->fav_scroll = app->fav_selected - FAV_ROW_VIS + 1;
+                    }
+                    break;
+                }
+            }
+            /* If the cycled-to file isn't in this list (not itself a
+             * favorite/search match), fav_selected just stays where it
+             * was - there's nothing in this list to highlight for it. */
+            ffv_fav_scroll_start(app);
+            app->current_view = ViewFavourites;
+            view_dispatcher_switch_to_view(app->view_dispatcher, ViewFavourites);
+        } else {
+            file_browser_stop(app->browser);
+            file_browser_start(app->browser, app->selected_path);
+            app->current_view = ViewBrowser;
+            view_dispatcher_switch_to_view(app->view_dispatcher, ViewBrowser);
+        }
+        return true;
+    }
     case ViewMenu:
-        ffv_return_from_menu(app);
+        if(app->menu_is_app_picker){
+            /* Back from "Open With" goes up one level, to the File Options
+             * menu it was opened from - not all the way out to the browser. */
+            ffv_build_menu(app);
+            with_view_model(app->menu_view,uint8_t* _m,{UNUSED(_m);},true);
+        } else {
+            ffv_return_from_menu(app);
+        }
         return true;
     case ViewTextInput:
         if(app->text_input_mode == TextInputSearch) ffv_go_start(app);
@@ -712,10 +1037,20 @@ static void ffv_build_menu(FFVApp* app){
     const char* path=furi_string_get_cstr(app->selected_path);
     FFVFileType t=ffv_type_from_path(path);
     app->menu_count=app->menu_selected=0;
-    bool run=(t!=TypeUnknown&&t!=TypeFile&&t!=TypeFolder);
+    app->menu_is_app_picker=false;
+    const char* run_candidates[FFV_MAX_APPS_PER_TYPE];
+    bool has_converter = storage_file_exists(app->storage, FOX_XBM_CONVERTER_FAP_PATH);
+    /* TypeUpdate/TypeApp/TypeImage/TypeBmp are handled directly in
+     * ffv_do_action() rather than through the app-mapping table, but still
+     * get a Run entry here. TypeBmp always does now, even without the
+     * converter installed - selecting "View" just shows a brief "convert
+     * first" reminder in that case instead of actually opening the file. */
+    bool run=(t==TypeUpdate||t==TypeApp||t==TypeImage||t==TypeBmp||
+              ffv_apps_for(t,run_candidates)>0);
     if(run){
-        strlcpy(app->menu_labels[app->menu_count],
-                (t==TypeUpdate) ? "Install" : "Run in app", 24);
+        const char* label = (t==TypeUpdate)                                ? "Install"   :
+                             ((t==TypeImage||t==TypeBmp) && !has_converter) ? "View"      : "Run in app";
+        strlcpy(app->menu_labels[app->menu_count], label, 24);
         app->menu_actions[app->menu_count++]=MenuRun;
     }
     bool pin=ffv_is_pinned(app->storage,path);
@@ -767,34 +1102,109 @@ static void ffv_do_action(FFVApp* app, FFVMenuAction action){
     const char* path=furi_string_get_cstr(app->selected_path);
     switch(action){
     case MenuRun: {
+        if(app->menu_is_app_picker) {
+            /* User just picked one of several candidate apps from the
+             * "Open With" sub-menu built below - launch it and we're done.
+             * An empty target string is the "View" sentinel used by the
+             * TypeImage/TypeBmp picker to mean "stay in FFB" instead of
+             * launching an external app - for TypeBmp there's nothing FFB
+             * can actually display, so that shows a brief reminder instead
+             * and deliberately leaves menu_is_app_picker set so "View"
+             * stays the selected row once the reminder clears. */
+            if(app->app_picker_targets[app->menu_selected][0] == '\0') {
+                if(ffv_type_from_path(path) == TypeBmp) {
+                    ffv_show_menu_toast(app);
+                    break;
+                }
+                app->menu_is_app_picker = false;
+                ffv_go_image_view(app);
+                break;
+            }
+            app->menu_is_app_picker = false;
+            loader_enqueue_launch(
+                app->loader,
+                app->app_picker_targets[app->menu_selected],
+                path,
+                LoaderDeferredLaunchFlagGui);
+            view_dispatcher_stop(app->view_dispatcher);
+            break;
+        }
+
         FFVFileType t = ffv_type_from_path(path);
-        const char* app_name = NULL;
-        const char* app_args = NULL;
         char fap_path_buf[512];
 
         if(t == TypeUpdate) {
-            app_name = "updater_app";
-            app_args = path;
-        } else if(t == TypeApp) {
-            app_name = path;
-            app_args = NULL;
-        } else {
-            app_name = ffv_app_for(t);
-            app_args = path;
-        }
-
-        if(app_name) {
-            if(t == TypeApp) {
-                strlcpy(fap_path_buf, path, sizeof(fap_path_buf));
-                app_name = fap_path_buf;
-            }
             loader_enqueue_launch(
-                app->loader,
-                app_name,
-                app_args,
-                LoaderDeferredLaunchFlagGui);
+                app->loader, "updater_app", path, LoaderDeferredLaunchFlagGui);
+            view_dispatcher_stop(app->view_dispatcher);
+        } else if(t == TypeApp) {
+            strlcpy(fap_path_buf, path, sizeof(fap_path_buf));
+            loader_enqueue_launch(
+                app->loader, fap_path_buf, NULL, LoaderDeferredLaunchFlagGui);
+            view_dispatcher_stop(app->view_dispatcher);
+        } else if(t == TypeImage || t == TypeBmp) {
+            /* When Fox XBM Converter isn't installed: TypeImage stays
+             * inside FFB as another view rather than launching an external
+             * app - a .xbm can only ever be opened with a path already in
+             * hand, so it was never a good fit for the Apps list on its
+             * own (see ffv_go_image_view()/ffv_nav_callback()) - and
+             * TypeBmp, which FFB has no built-in way to display at all,
+             * shows the same brief reminder used by the picker's "View"
+             * entry below. When the converter IS installed, offer a small
+             * "Open With" style picker so the user can still choose View
+             * instead of always launching it. */
+            if(!storage_file_exists(app->storage, FOX_XBM_CONVERTER_FAP_PATH)) {
+                if(t == TypeBmp) {
+                    ffv_show_menu_toast(app);
+                } else {
+                    ffv_go_image_view(app);
+                }
+            } else {
+                app->menu_count = 0;
+                strlcpy(app->menu_labels[app->menu_count], "View", 24);
+                app->app_picker_targets[app->menu_count][0] = '\0';
+                app->menu_actions[app->menu_count] = MenuRun;
+                app->menu_count++;
+                strlcpy(app->menu_labels[app->menu_count], FOX_XBM_CONVERTER_APP_NAME, 24);
+                /* Launch target must be the .fap's path, not its display
+                 * name above - the loader has no built-in-app-table entry
+                 * for it to resolve a name against. */
+                strlcpy(app->app_picker_targets[app->menu_count], FOX_XBM_CONVERTER_FAP_PATH, 48);
+                app->menu_actions[app->menu_count] = MenuRun;
+                app->menu_count++;
+                app->menu_selected = 0;
+                app->menu_is_app_picker = true;
+                with_view_model(app->menu_view, uint8_t* _m, { UNUSED(_m); }, true);
+            }
+        } else {
+            const char* candidates[FFV_MAX_APPS_PER_TYPE];
+            uint8_t n = ffv_apps_for(t, candidates);
+            if(n == 1) {
+                loader_enqueue_launch(
+                    app->loader, candidates[0], path, LoaderDeferredLaunchFlagGui);
+                view_dispatcher_stop(app->view_dispatcher);
+            } else if(n > 1) {
+                /* Ambiguous - turn this same menu into an "Open With" list
+                 * of app names instead of launching. Selecting a row re-
+                 * enters this case with menu_is_app_picker true, above. */
+                app->menu_count = 0;
+                for(uint8_t i = 0; i < n; i++) {
+                    strlcpy(app->menu_labels[app->menu_count], candidates[i], 24);
+                    strlcpy(app->app_picker_targets[app->menu_count], candidates[i], 24);
+                    app->menu_actions[app->menu_count] = MenuRun;
+                    app->menu_count++;
+                }
+                app->menu_selected = 0;
+                app->menu_is_app_picker = true;
+                with_view_model(app->menu_view, uint8_t* _m, { UNUSED(_m); }, true);
+            } else {
+                /* Nothing can open this - shouldn't happen, ffv_build_menu()
+                 * only offers Run when ffv_apps_for() found at least one
+                 * candidate, but fail safe rather than launch nothing
+                 * silently forever. */
+                view_dispatcher_stop(app->view_dispatcher);
+            }
         }
-        view_dispatcher_stop(app->view_dispatcher);
         break;
     }
 
@@ -893,10 +1303,18 @@ static FFVApp* ffv_alloc(void){
     view_set_input_callback(app->menu_view,ffv_menu_input_cb);
     view_set_context(app->menu_view,app);
     view_allocate_model(app->menu_view,ViewModelTypeLocking,sizeof(uint8_t));
+    app->menu_toast_timer=furi_timer_alloc(ffv_menu_toast_timer_cb,FuriTimerTypeOnce,app);
     view_dispatcher_add_view(app->view_dispatcher,ViewMenu,app->menu_view);
 
     app->text_input=text_input_alloc();
     view_dispatcher_add_view(app->view_dispatcher,ViewTextInput,text_input_get_view(app->text_input));
+
+    app->image_view=view_alloc();
+    view_set_draw_callback(app->image_view,ffv_image_draw_cb);
+    view_set_input_callback(app->image_view,ffv_image_input_cb);
+    view_set_context(app->image_view,app);
+    view_allocate_model(app->image_view,ViewModelTypeLocking,sizeof(uint8_t));
+    view_dispatcher_add_view(app->view_dispatcher,ViewImage,app->image_view);
 
     return app;
 }
@@ -904,6 +1322,7 @@ static FFVApp* ffv_alloc(void){
 static void ffv_free(FFVApp* app){
     s_ffv_ctx=NULL;
     ffv_favs_free(app);
+    ffv_image_list_free(app);
 
     if(app->browser_started) file_browser_stop(app->browser);
     view_dispatcher_remove_view(app->view_dispatcher,ViewStart);
@@ -911,13 +1330,17 @@ static void ffv_free(FFVApp* app){
     view_dispatcher_remove_view(app->view_dispatcher,ViewFavourites);
     view_dispatcher_remove_view(app->view_dispatcher,ViewMenu);
     view_dispatcher_remove_view(app->view_dispatcher,ViewTextInput);
+    view_dispatcher_remove_view(app->view_dispatcher,ViewImage);
     view_free(app->start_view);
     file_browser_free(app->browser);
     furi_timer_stop(app->fav_scroll_timer);
     furi_timer_free(app->fav_scroll_timer);
+    furi_timer_stop(app->menu_toast_timer);
+    furi_timer_free(app->menu_toast_timer);
     view_free(app->fav_view);
     view_free(app->menu_view);
     text_input_free(app->text_input);
+    view_free(app->image_view);
     view_dispatcher_free(app->view_dispatcher);
     furi_string_free(app->selected_path);
     furi_string_free(app->current_dir);

@@ -250,11 +250,15 @@ void subghz_protocol_decoder_raw_feed(void* context, bool level, uint32_t durati
         if(duration > subghz_protocol_raw_const.te_short) {
             if(instance->last_level != level) {
                 instance->last_level = (level ? true : false);
-                instance->upload_raw[instance->ind_write++] = (level ? duration : -duration);
+                /* Guards against a heap overflow if a prior flush failed
+                 * and left ind_write un-reset - see save_to_file_write(). */
+                if(instance->ind_write < SUBGHZ_DOWNLOAD_MAX_SIZE) {
+                    instance->upload_raw[instance->ind_write++] = (level ? duration : -duration);
+                }
             }
         }
 
-        if(instance->ind_write == SUBGHZ_DOWNLOAD_MAX_SIZE) {
+        if(instance->ind_write >= SUBGHZ_DOWNLOAD_MAX_SIZE) {
             subghz_protocol_raw_save_to_file_write(instance);
         }
     }

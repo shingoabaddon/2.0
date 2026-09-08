@@ -447,7 +447,7 @@ void csight_draw_settings(Canvas* c, CSIghtApp* app) {
     canvas_draw_line(c, 0, 12, SCREEN_W, 12);
     canvas_set_font(c, FontSecondary);
 
-    // Scrolling window: show 4 items at a time, centred around the selection
+    // Scrolling window: show 4 items at a time, centered around the selection
     // where possible, so all SETTINGS_COUNT items fit legibly on a 64px screen.
     #define VISIBLE_ROWS 4
     int top = (int)app->settings_idx - 1;

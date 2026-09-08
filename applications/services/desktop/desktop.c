@@ -1,5 +1,6 @@
 #include "desktop_i.h"
 
+#include <furi/core/memmgr.h>
 #include <cli/cli_vcp.h>
 #include <bt/bt_service/bt.h>
 #include <furi_hal_serial_control.h>
@@ -10,6 +11,8 @@
 #include <storage/storage.h>
 #include <assets_icons.h>
 #include <version.h>
+#include <lib/subghz/devices/devices.h>
+#include <applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h>
 
 #include "scenes/desktop_scene.h"
 #include "scenes/desktop_scene_locked.h"
@@ -25,7 +28,59 @@
 static FuriHalSerialHandle* s_locked_gpio_usart  = NULL;
 static FuriHalSerialHandle* s_locked_gpio_lpuart = NULL;
 static FuriHalUsbInterface* s_locked_usb_config  = NULL; // saved USB config, restored on unlock
+/* Gates the PIN lock's combined CLI-session-lock + hard-USB-teardown pair
+ * as one unit (see desktop_cli_vcp_session_lock_acquire/release below) -
+ * independent of s_locked_usb_config's own NULL-ness, since
+ * furi_hal_usb_get_config() can legitimately already read NULL at lock
+ * time (e.g. the RAM watchdog got there first - see below), in which case
+ * s_locked_usb_config staying NULL must not be mistaken for "nothing to
+ * release" on unlock. */
+static bool s_locked_usb_disconnected = false;
 static bool s_animation_was_stalled = false;
+
+/* Low-RAM watchdog: separate saved-config slot from s_locked_usb_config
+ * above so a RAM trip and a PIN lock can never clobber each other's saved
+ * state if both happen to be active at once - see
+ * desktop_ram_watchdog_timer_callback() below. */
+static FuriHalUsbInterface* s_ram_watchdog_usb_config = NULL;
+/* Same reasoning as s_locked_usb_disconnected above, for the RAM watchdog's
+ * own combined lock/unlock pair. */
+static bool s_ram_watchdog_usb_disconnected = false;
+
+/* Both the PIN lock and the RAM watchdog now pair their hard USB teardown
+ * with cli_vcp_session_lock()/_unlock() (see either call site's own
+ * comment for why: a hard USB-only teardown doesn't tell CLI VCP's state
+ * machine a disconnect happened, so any session active at that exact
+ * moment gets orphaned rather than freed - confirmed by reading cdc_deinit()
+ * in targets/f7/furi_hal/furi_hal_usb_cdc.c, the same root cause diagnosed
+ * and fixed for Garage/Gate/Other's own CLI soft-lock - repeated lock/
+ * unlock or trip/recover cycles would otherwise ratchet free heap down a
+ * little further each time). Unlike Garage (a single app instance with one
+ * call site), these two subsystems can genuinely be active at once (the
+ * device can be PIN-locked when a RAM trip fires, or vice versa), and
+ * cli_vcp_session_lock()/_unlock() toggle one plain shared bool in CliVcp,
+ * not a refcount - a naive lock/unlock pair in each subsystem could let
+ * one's recovery prematurely unlock CLI while the other still needs it
+ * held. This refcount is the fix: the real cli_vcp_session_unlock() only
+ * fires once every acquirer has released. */
+static uint8_t s_cli_vcp_session_lock_refcount = 0;
+
+static void desktop_cli_vcp_session_lock_acquire(void) {
+    if(s_cli_vcp_session_lock_refcount++ == 0) {
+        CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
+        cli_vcp_session_lock(cli_vcp);
+        furi_record_close(RECORD_CLI_VCP);
+    }
+}
+
+static void desktop_cli_vcp_session_lock_release(void) {
+    furi_assert(s_cli_vcp_session_lock_refcount > 0);
+    if(--s_cli_vcp_session_lock_refcount == 0) {
+        CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
+        cli_vcp_session_unlock(cli_vcp);
+        furi_record_close(RECORD_CLI_VCP);
+    }
+}
 
 #define WALLPAPER_DIR              EXT_PATH("wallpapers")
 #define WALLPAPER_ACTIVATE_MARKER  EXT_PATH("wallpapers/.activate")
@@ -38,13 +93,24 @@ static bool s_animation_was_stalled = false;
 // resolution alarm and matches the existing wifi-status poll interval below.
 #define ALARM_CHECK_POLL_MS 15000
 
+// Low-RAM watchdog (last-resort, system-wide - see subghz_garage's own,
+// higher-threshold watchdog for the app-level first line of defense).
+// 1s poll is cheap (a single memmgr call) and responsive enough that a
+// fast RAM drain still gets caught before a furi_check OOM crash.
+#define RAM_WATCHDOG_POLL_MS 1000
+// Trip at 1% of total heap free. Recovered/reset at 2% - simple 2x
+// hysteresis so a reading that's just barely over the trip line doesn't
+// immediately flap the popup/USB back off.
+#define RAM_WATCHDOG_TRIP_HEAP_PERCENT      1
+#define RAM_WATCHDOG_RECOVER_HEAP_PERCENT   2
+
 #define FOX_SETUP_FLAG_PATH      "/int/fox_setup.done"
 #define FOX_SETUP_FLAG_EXT_PATH  "/ext/System/.fox_setup.done"  /* EXT mirror — both must be absent to bypass */
 #define FOX_SETUP_AUTO_ARG   "auto"
 
-/* Fox ESP32 companion apps (fox_esp32_commander etc.) write "1" or "0"
+/* Fox ESP32 companion apps (foxhub etc.) write "1" or "0"
  * here whenever they confirm the ESP32's WiFi connect state changes -
- * see fox_esp32_commander's wifi_menu.c. Unrelated to the FOX_SETUP_*
+ * see foxhub's wifi_menu.c. Unrelated to the FOX_SETUP_*
  * flags above (different "Fox" subsystem, same project prefix). The
  * icon itself only ever reads this file (see
  * desktop_wifi_status_timer_callback() below) - it never touches the
@@ -64,6 +130,22 @@ static bool s_animation_was_stalled = false;
  * of the icon-drawing reasoning. */
 #define FOX_ESP32_WIFI_STATUS_PATH EXT_PATH("apps_data/fox_esp32/wifi_status.txt")
 #define FOX_ESP32_WIFI_POLL_MS 2000
+
+/* Written by SubGhz_Garage_cc1101_check (applications/fox/SubGhz_Garage_
+ * cc1101_check) every time it probes for an external CC1101 module - '1'
+ * or '0'. Same read-only-flag-file relationship as FOX_ESP32_WIFI_STATUS_
+ * PATH above: the icon (desktop_wifi_icon_draw_callback()) only ever reads
+ * this, never probes the hardware itself - see desktop_cc1101_ext_check()
+ * further down for what actually keeps it fresh. */
+#define CC1101_EXT_STATUS_PATH EXT_PATH("subghz/.cc1101_ext_status")
+
+/* Written once desktop_wifi_recheck_thread() gets a genuine reply (not just
+ * silence) from an ESP32 over the probe UART - its existence means this
+ * device has actually had a Fox ESP32 board attached at some point, and is
+ * what lets the recheck thread back off to a slow discovery cadence for
+ * everyone else instead of probing the UART and cycling a heap buffer every
+ * 15 seconds forever regardless of whether there's any ESP32 to find. */
+#define FOX_ESP32_SEEN_PATH EXT_PATH("apps_data/fox_esp32/esp32_seen")
 
 static void desktop_auto_lock_arm(Desktop*);
 static void desktop_auto_lock_inhibit(Desktop*);
@@ -509,32 +591,73 @@ static void desktop_stealth_mode_icon_draw_callback(Canvas* canvas, void* contex
     canvas_draw_icon(canvas, 0, 0, &I_Muted_8x8);
 }
 
+/* Three states, checked in this priority order: WiFi connected always wins
+ * (it's the more commonly-used indicator and the one users are already
+ * used to checking here), then CC1101 external module connected, then
+ * neither - reusing the existing "disconnected" glyph for that last case
+ * rather than a fourth icon, same as before this icon meant two different
+ * things. */
 static void desktop_wifi_icon_draw_callback(Canvas* canvas, void* context) {
     Desktop* desktop = context;
     furi_assert(canvas);
     furi_assert(desktop);
 
-    canvas_draw_icon(
-        canvas, 2, 0, desktop->wifi_connected ? &I_WiFi_Connected_9x8 : &I_WiFi_Disconnected_9x8);
+    const Icon* icon;
+    if(desktop->wifi_connected) {
+        icon = &I_WiFi_Connected_9x8;
+    } else if(desktop->cc1101_connected) {
+        icon = &I_CC1101_Connected_9x8;
+    } else {
+        icon = &I_WiFi_Disconnected_9x8;
+    }
+    canvas_draw_icon(canvas, 2, 0, icon);
 }
 
 static void desktop_wifi_status_timer_callback(void* context) {
     Desktop* desktop = context;
     furi_assert(desktop);
 
-    bool connected = false;
+    bool wifi_connected = false;
     File* f = storage_file_alloc(desktop->storage);
     if(storage_file_open(f, FOX_ESP32_WIFI_STATUS_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
         char buf[1] = {0};
         if(storage_file_read(f, buf, 1) == 1) {
-            connected = (buf[0] == '1');
+            wifi_connected = (buf[0] == '1');
+        }
+    }
+    storage_file_close(f);
+
+    /* Root cause of the bootloop (found and fixed here): this used to call
+     * storage_file_free(f) right above, then reuse the same (now-freed) f
+     * for the CC1101_EXT_STATUS_PATH open below, then free it a second
+     * time at the end - a use-after-free followed by a double-free on
+     * every single boot (this callback runs synchronously inside
+     * desktop_alloc() before anything else, then every
+     * FOX_ESP32_WIFI_POLL_MS after that), corrupting the heap allocator.
+     * storage_file_close() (not free) is enough to reuse the same handle
+     * for a second open - only storage_file_free() actually releases the
+     * File struct, and that must happen exactly once, after both opens are
+     * done. */
+    bool cc1101_connected = false;
+    if(storage_file_open(f, CC1101_EXT_STATUS_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        char buf[1] = {0};
+        if(storage_file_read(f, buf, 1) == 1) {
+            cc1101_connected = (buf[0] == '1');
         }
     }
     storage_file_close(f);
     storage_file_free(f);
 
-    if(connected != desktop->wifi_connected) {
-        desktop->wifi_connected = connected;
+    bool icon_changed = false;
+    if(wifi_connected != desktop->wifi_connected) {
+        desktop->wifi_connected = wifi_connected;
+        icon_changed = true;
+    }
+    if(cc1101_connected != desktop->cc1101_connected) {
+        desktop->cc1101_connected = cc1101_connected;
+        icon_changed = true;
+    }
+    if(icon_changed) {
         view_port_update(desktop->wifi_icon_viewport);
     }
 
@@ -543,8 +666,15 @@ static void desktop_wifi_status_timer_callback(void* context) {
 
 
 #define FOX_ESP32_WIFI_RECHECK_MS        15000
+#define FOX_ESP32_WIFI_DISCOVERY_MS      (1 * 60 * 1000)
 #define FOX_ESP32_WIFI_PROBE_TIMEOUT_MS  500
 #define FOX_ESP32_WIFI_PROBE_BAUD        115200
+/* The CC1101 probe used to run on its own flat 30-minute timer, completely
+ * independent of boot - it never got anywhere near boot timing before. Now
+ * that it shares this thread's cadence, block it from running at all until
+ * this much uptime has passed, so it can't land in the same narrow
+ * post-boot window that timer never exposed it to. */
+#define FOX_CC1101_BOOT_SETTLE_MS        5000
 
 typedef struct {
     FuriStreamBuffer* stream;
@@ -720,8 +850,97 @@ static void fox_wifi_status_write_raw(Storage* storage, bool connected) {
     storage_file_free(file);
 }
 
+static void fox_wifi_mark_esp32_seen(Storage* storage) {
+    storage_simply_mkdir(storage, "/ext/apps_data");
+    storage_simply_mkdir(storage, "/ext/apps_data/fox_esp32");
+
+    File* file = storage_file_alloc(storage);
+    storage_file_open(file, FOX_ESP32_SEEN_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS);
+    storage_file_close(file);
+    storage_file_free(file);
+}
+
+/* Garage/Gate/Other is hardcoded to the internal CC1101 - the code path
+ * that lets it use an external module was disconnected along with Radio
+ * Settings (see subghz_txrx_radio_device_set() in that app's helpers/
+ * subghz_txrx.c, now unreachable) because actually checking "is an
+ * external module present" costs ~25KB (subghz_devices_load_external()
+ * loads a real .fal plugin) - not affordable to pay on every launch just
+ * to learn the answer is usually "no".
+ *
+ * Called from desktop_wifi_recheck_thread() below, behind the same idle
+ * gate and boot-settle guard as the WiFi UART probe (see
+ * FOX_CC1101_BOOT_SETTLE_MS above). Runs the same load/query/unload
+ * sequence SubGhz_Garage_cc1101_check.fap used to run as a separate
+ * launched app - inlined directly here instead of going through
+ * loader_start() so this background check no longer has to launch a whole
+ * external app from a service thread just to answer one yes/no question;
+ * the transient ~25KB plugin-load cost is freed again by
+ * subghz_devices_deinit() below either way. Also launched, separately,
+ * every time the user opens Garage/Gate/Other via core subghz's Mode
+ * Picker (see subghz_scene_mode_picker_launch_garage_and_exit() in
+ * applications/main/subghz/scenes/subghz_scene_mode_picker.c - that path
+ * still launches SubGhz_Garage_cc1101_check.fap itself, unrelated to this
+ * background check). Garage/Gate/Other itself just reads whichever flag is
+ * cached (see subghz_txrx_ensure_radio_init() in that app) instead of
+ * probing itself. */
+static void desktop_cc1101_ext_check(Desktop* desktop) {
+    // Caller already confirmed nothing else is running/the device isn't
+    // locked - see desktop_wifi_recheck_thread() below. That matters here
+    // more than it used to: the subghz device registry below is a global
+    // singleton (lib/subghz/devices/devices.c) that hard-crashes via
+    // furi_check() if something else already has it initialized, and
+    // there's no Loader arbitration protecting us from that anymore now
+    // that this runs inline instead of as a separate launched app.
+    bool connected = false;
+
+    subghz_devices_init_internal_only();
+    if(subghz_devices_load_external()) {
+        const SubGhzDevice* device = subghz_devices_get_by_name(SUBGHZ_DEVICE_CC1101_EXT_NAME);
+        if(device) {
+            connected = subghz_devices_is_connect(device);
+        }
+    }
+    subghz_devices_deinit();
+
+    File* file = storage_file_alloc(desktop->storage);
+    if(storage_file_open(file, CC1101_EXT_STATUS_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        char c = connected ? '1' : '0';
+        storage_file_write(file, &c, 1);
+        storage_file_close(file);
+    } else {
+        FURI_LOG_W(TAG, "Couldn't write %s", CC1101_EXT_STATUS_PATH);
+    }
+    storage_file_free(file);
+
+    /* Update the live icon state directly instead of only writing the flag
+     * file and waiting for desktop_wifi_status_timer_callback()'s own
+     * separate FOX_ESP32_WIFI_POLL_MS poll to notice it - this is the only
+     * caller that ever has a fresh, just-measured answer in hand, so there's
+     * no reason to make the icon wait up to another 2s for it.
+     * view_port_update() is safe to call from any thread (same pattern
+     * desktop_wifi_status_timer_callback() already uses from its own,
+     * different thread context). */
+    if(connected != desktop->cc1101_connected) {
+        desktop->cc1101_connected = connected;
+        view_port_update(desktop->wifi_icon_viewport);
+    }
+}
+
 static int32_t desktop_wifi_recheck_thread(void* context) {
     Desktop* desktop = context;
+
+    /* Until an ESP32 has genuinely answered at least once on this device,
+     * probe on the slow FOX_ESP32_WIFI_DISCOVERY_MS cadence instead of every
+     * FOX_ESP32_WIFI_RECHECK_MS - most FoxFW users don't have an ESP32
+     * companion board attached, and there's no reason to cycle a UART probe
+     * plus a heap alloc/free every 15 seconds forever just in case one shows
+     * up. Once fox_wifi_probe_pins() gets a real reply (not just silence),
+     * this switches to the fast cadence for the rest of this boot and stays
+     * that way on every future boot via the FOX_ESP32_SEEN_PATH marker. This
+     * same cadence now also governs desktop_cc1101_ext_check() below - see
+     * its own comment for why the two were merged into one thread. */
+    bool esp32_seen = storage_file_exists(desktop->storage, FOX_ESP32_SEEN_PATH);
 
     /* Probe immediately on the first pass, THEN settle into the normal
        once-a-minute cadence below - previously this slept a full
@@ -741,11 +960,23 @@ static int32_t desktop_wifi_recheck_thread(void* context) {
        several iterations will land inside the same "just past xx:00 or
        xx:30" window. -1 means "haven't sent one yet this boot". */
     int last_tz_refresh_slot = -1;
+    uint32_t thread_start_tick = furi_get_tick();
     while(true) {
         if(!first_pass) {
-            furi_delay_ms(FOX_ESP32_WIFI_RECHECK_MS);
+            furi_delay_ms(esp32_seen ? FOX_ESP32_WIFI_RECHECK_MS : FOX_ESP32_WIFI_DISCOVERY_MS);
         }
         first_pass = false;
+
+        /* Both the WiFi UART probe and the CC1101 probe below only make
+         * sense, and only stay unobtrusive, while nothing else has the
+         * screen - same "genuinely idle" gate desktop_lock's auto-lock
+         * decision and the clock-lock scene already use elsewhere in this
+         * file. Skip this whole cycle if not idle right now; the next
+         * scheduled cycle checks again rather than trying to catch the
+         * exact moment idle starts. */
+        if(desktop->app_running || desktop->locked) {
+            continue;
+        }
 
         FuriHalSerialId working_id = FuriHalSerialIdUsart;
         int result_usart = fox_wifi_probe_pins(FuriHalSerialIdUsart);
@@ -767,6 +998,11 @@ static int32_t desktop_wifi_recheck_thread(void* context) {
             bool connected = (result == 1);
             fox_wifi_status_write_raw(desktop->storage, connected);
 
+            if(!esp32_seen && (result == 0 || result == 1)) {
+                esp32_seen = true;
+                fox_wifi_mark_esp32_seen(desktop->storage);
+            }
+
             /* Re-check the ESP32's timezone offset shortly after every
                xx:00 and xx:30, so a DST shift gets picked up within half
                an hour instead of staying wrong until the next manual WiFi
@@ -786,6 +1022,27 @@ static int32_t desktop_wifi_recheck_thread(void* context) {
                     }
                 }
             }
+        }
+
+        /* Skip the CC1101 probe entirely until FOX_CC1101_BOOT_SETTLE_MS of
+         * uptime has passed - see that define's comment. On first_pass this
+         * is always true (thread just started), so the very first CC1101
+         * check is deferred to a later loop iteration instead of running
+         * within ~1-2s of Desktop starting, which is what this thread's
+         * skip-the-delay-on-first_pass behavior (added for the WiFi icon,
+         * above) was letting happen every single boot after the CC1101
+         * check got merged onto this thread. */
+        if(furi_get_tick() - thread_start_tick >= furi_ms_to_ticks(FOX_CC1101_BOOT_SETTLE_MS)) {
+            /* Give the UART/Expansion teardown above (furi_hal_serial_deinit(),
+             * expansion_enable() - see fox_wifi_probe_pins()'s own cleanup) a
+             * moment to fully settle before the CC1101 probe app below starts
+             * touching its own GPIO/SPI peripherals. These probes ran on
+             * completely independent timers before this session merged them
+             * onto one thread/cadence, so they never used to land back-to-back
+             * like this. */
+            furi_delay_ms(300);
+
+            desktop_cc1101_ext_check(desktop);
         }
     }
 
@@ -1376,6 +1633,91 @@ static void desktop_alarm_check_timer_callback(void* context) {
 
 // --- FOX ALARM CLOCK END ---
 
+// --- LOW RAM WATCHDOG (system-wide, last resort) ---
+// See subghz_garage's own app-level watchdog (higher threshold, fires
+// first while that app is in the foreground) for the first line of
+// defense - this one is deliberately the last resort, catching any app
+// (or Desktop itself) that gets free heap down to RAM_WATCHDOG_TRIP_HEAP_
+// PERCENT of total. Best-effort, not a reboot: closes whatever app is
+// running via loader_signal(FuriSignalExit) - the same mechanism `loader
+// close`/`fbt launch` already use, which works for any app built on the
+// standard ViewDispatcher/FuriEventLoop run loop (FuriEventLoop installs
+// that handler by default - effectively every app in this firmware) -
+// soft-disables USB/CLI, and resets every exposed GPIO pin to a safe idle
+// state. All of it is reversible; none of it requires a reboot.
+static void desktop_ram_watchdog_trigger(Desktop* desktop) {
+    FURI_LOG_W(
+        TAG,
+        "Low RAM watchdog tripped: free heap %zu, total %zu",
+        memmgr_get_free_heap(),
+        memmgr_get_total_heap());
+
+    // Best-effort close of whatever's running. Safe no-op if nothing is
+    // running, or if the running app doesn't use the standard event loop
+    // (loader_signal just returns false either way).
+    loader_signal(desktop->loader, FuriSignalExit, NULL);
+
+    // Soft-disable USB/CLI - kills qFlipper/CDC without needing a physical
+    // replug to bring it back (own saved-config slot, separate from PIN
+    // lock's s_locked_usb_config, so the two features can't clobber each
+    // other if both happen to be active at once). Session-locked first via
+    // the shared refcount - see s_cli_vcp_session_lock_refcount's comment.
+    desktop_cli_vcp_session_lock_acquire();
+
+    s_ram_watchdog_usb_config = furi_hal_usb_get_config();
+    furi_hal_usb_unlock();
+    furi_hal_usb_set_config(NULL, NULL);
+    s_ram_watchdog_usb_disconnected = true;
+
+    // Reset every exposed GPIO pin (except debug-reserved ones) to a safe
+    // high-impedance idle state - the same primitive applications/main/
+    // gpio's GPIOItems uses internally (gpio_items_configure_all_pins),
+    // inlined here to avoid a cross-app header dependency from a system
+    // service.
+    for(size_t i = 0; i < gpio_pins_count; i++) {
+        if(gpio_pins[i].debug) continue;
+        furi_hal_gpio_write(gpio_pins[i].pin, false);
+        furi_hal_gpio_init(gpio_pins[i].pin, GpioModeAnalog, GpioPullNo, GpioSpeedVeryHigh);
+    }
+
+    desktop->ram_watchdog_tripped = true;
+    scene_manager_next_scene(desktop->scene_manager, DesktopSceneLowRam);
+}
+
+static void desktop_ram_watchdog_timer_callback(void* context) {
+    Desktop* desktop = context;
+    furi_assert(desktop);
+
+    size_t total = memmgr_get_total_heap();
+    size_t free_heap = memmgr_get_free_heap();
+
+    if(desktop->ram_watchdog_tripped) {
+        // Already tripped this episode - only watch for recovery, don't
+        // re-trigger (re-entering the scene while it's already showing
+        // would just push a duplicate onto the stack).
+        if(free_heap > (total * RAM_WATCHDOG_RECOVER_HEAP_PERCENT) / 100 &&
+           s_ram_watchdog_usb_disconnected) {
+            /* Reverse order from trigger - see desktop_unlock()'s matching
+             * comment. */
+            furi_hal_usb_set_config(s_ram_watchdog_usb_config, NULL);
+            s_ram_watchdog_usb_config = NULL;
+
+            desktop_cli_vcp_session_lock_release();
+            s_ram_watchdog_usb_disconnected = false;
+
+            desktop->ram_watchdog_tripped = false;
+            FURI_LOG_I(TAG, "Low RAM watchdog: USB/CLI restored, free heap %zu", free_heap);
+        }
+        return;
+    }
+
+    if(free_heap < (total * RAM_WATCHDOG_TRIP_HEAP_PERCENT) / 100) {
+        desktop_ram_watchdog_trigger(desktop);
+    }
+}
+// --- LOW RAM WATCHDOG END ---
+
+
 static void desktop_apply_settings(Desktop* desktop) {
     desktop->in_transition = true;
 
@@ -1426,7 +1768,7 @@ static void desktop_init_settings(Desktop* desktop) {
 
     /* Sync Fox.cfg to match the loaded settings so the theme is correct
      * from first paint — also fixes stale Fox.cfg values after firmware update. */
-    fox_theme_set(desktop->settings.menu_theme == MenuThemeFox);
+    fox_theme_set_style(desktop->settings.menu_theme);
     desktop_apply_settings(desktop);
 }
 
@@ -1437,6 +1779,20 @@ static Desktop* desktop_alloc(void) {
     desktop->wallpaper_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     desktop->no_sd_viewport  = NULL;
     desktop->pending_slideshow = false;
+    desktop->ram_watchdog_tripped = false;
+    /* desktop->locked is otherwise ONLY ever written inside desktop_lock()/
+     * desktop_unlock() - both purely runtime, event-driven, never called
+     * during boot - so without this explicit init it stays whatever
+     * malloc() (not calloc) left in this heap slot until the very first
+     * real lock/unlock happens, however long into the session that is.
+     * Multiple call sites read it as an idle gate before then (this
+     * thread's own loop below, desktop_apply_settings()'s auto-lock arm
+     * decision, the clock-lock scene entry) - previously harmless either
+     * way (worst case: one skipped/extra background probe cycle), but
+     * desktop_wifi_recheck_thread() below now also gates a real app launch
+     * (desktop_cc1101_ext_check()) on this same read, so a garbage "not
+     * locked" here is no longer a no-op. */
+    desktop->locked = false;
 
     desktop->alarm_ringing = false;
     desktop->alarm_ringing_index = 0;
@@ -1587,11 +1943,20 @@ static Desktop* desktop_alloc(void) {
         furi_timer_alloc(desktop_alarm_check_timer_callback, FuriTimerTypePeriodic, desktop);
     furi_timer_start(desktop->alarm_check_timer, furi_ms_to_ticks(ALARM_CHECK_POLL_MS));
 
-    desktop->wifi_recheck_thread =
-        furi_thread_alloc_ex("FoxWifiRecheck", 1024, desktop_wifi_recheck_thread, desktop);
-    furi_thread_start(desktop->wifi_recheck_thread);
+    desktop->ram_watchdog_timer =
+        furi_timer_alloc(desktop_ram_watchdog_timer_callback, FuriTimerTypePeriodic, desktop);
+    furi_timer_start(desktop->ram_watchdog_timer, furi_ms_to_ticks(RAM_WATCHDOG_POLL_MS));
 
+    /* Must be set before the thread below starts, not after - that thread's
+     * very first loop iteration runs immediately once furi_thread_start()
+     * returns and can preempt this one, so assigning app_running afterward
+     * left a real window where its own idle-gate check read this field
+     * uninitialized (same class of bug as desktop->locked above). */
     desktop->app_running = loader_is_locked(desktop->loader);
+
+    desktop->wifi_recheck_thread =
+        furi_thread_alloc_ex("FoxWifiRecheck", 2048, desktop_wifi_recheck_thread, desktop);
+    furi_thread_start(desktop->wifi_recheck_thread);
 
     furi_record_create(RECORD_DESKTOP, desktop);
 
@@ -1624,9 +1989,15 @@ void desktop_lock(Desktop* desktop) {
             (desktop->settings.lock_usb_level >= LockUsbLevelSessionBlock);
 
         if(should_disconnect_usb) {
+            /* Session-lock before the hard teardown - see
+             * s_cli_vcp_session_lock_refcount's comment above for why both
+             * steps are needed and in this order. */
+            desktop_cli_vcp_session_lock_acquire();
+
             s_locked_usb_config = furi_hal_usb_get_config();
             furi_hal_usb_unlock(); // force-release VCP service lock → set_config works
             furi_hal_usb_set_config(NULL, NULL);
+            s_locked_usb_disconnected = true;
         }
     }
 
@@ -1683,9 +2054,15 @@ void desktop_unlock(Desktop* desktop) {
 
     }
 
-    if(s_locked_usb_config) {
+    if(s_locked_usb_disconnected) {
+        /* Reverse order from lock: USB hardware back up first, so the DTR
+         * read inside cli_vcp_session_unlock() reflects reality rather than
+         * a still-torn-down interface. */
         furi_hal_usb_set_config(s_locked_usb_config, NULL);
         s_locked_usb_config = NULL;
+
+        desktop_cli_vcp_session_lock_release();
+        s_locked_usb_disconnected = false;
     }
 
     DesktopStatus status = {.locked = false};

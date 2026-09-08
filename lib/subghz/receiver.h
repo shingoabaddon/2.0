@@ -15,6 +15,24 @@ typedef void (*SubGhzReceiverCallback)(
     void* context);
 
 /**
+ * Per-protocol enable check, consulted for every registered decoder on
+ * every call to subghz_receiver_decode() (in addition to the coarser
+ * flag-based filter set via subghz_receiver_set_filter()). Lets an app
+ * implement an individual protocol ON/OFF list without SubGhzReceiver
+ * needing to know anything about how that app stores its filter state.
+ * @param context App-supplied context
+ * @param registry_index This decoder's index in the SubGhzProtocolRegistry
+ *        it was built from - stable for the lifetime of one receiver, cheap
+ *        to use as an array index (unlike a name-based lookup).
+ * @param protocol_name The protocol's name, e.g. "KeeLoq"
+ * @return true if this protocol should still be fed data, false to skip it
+ */
+typedef bool (*SubGhzReceiverProtocolEnabledCallback)(
+    void* context,
+    size_t registry_index,
+    const char* protocol_name);
+
+/**
  * Allocate and init SubGhzReceiver.
  * @param environment Pointer to a SubGhzEnvironment instance
  * @return SubGhzReceiver* pointer to a SubGhzReceiver instance
@@ -58,6 +76,19 @@ void subghz_receiver_set_rx_callback(
  * @param filter Filter, SubGhzProtocolFlag
  */
 void subghz_receiver_set_filter(SubGhzReceiver* instance, SubGhzProtocolFlag filter);
+
+/**
+ * Set (or clear, with NULL) a per-protocol enable callback. When set, it is
+ * consulted before feeding data to each registered decoder, letting an app
+ * turn individual protocols off without rebuilding the receiver/registry.
+ * @param instance Pointer to a SubGhzReceiver instance
+ * @param callback Callback, SubGhzReceiverProtocolEnabledCallback, or NULL
+ * @param context Context passed to the callback
+ */
+void subghz_receiver_set_protocol_enabled_callback(
+    SubGhzReceiver* instance,
+    SubGhzReceiverProtocolEnabledCallback callback,
+    void* context);
 
 /**
  * Search for a cattery by his name.

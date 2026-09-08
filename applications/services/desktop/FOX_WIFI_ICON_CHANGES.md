@@ -14,7 +14,7 @@ its *state* gets decided.
 
 **The bug:** the icon has only ever reflected a one-byte flag file
 (`/ext/apps_data/fox_esp32/wifi_status.txt`) written by
-`fox_esp32_commander`'s WiFi menu whenever the user explicitly
+`foxhub`'s WiFi menu whenever the user explicitly
 connects/disconnects/forgets a network. That file never expires and
 nothing else ever touched it - so if the ESP32 got reflashed, or
 unplugged from the GPIO header entirely, while no Fox app happened to

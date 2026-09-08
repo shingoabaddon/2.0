@@ -38,10 +38,38 @@ typedef struct {
 } NfcProtocolSupportSceneBase;
 
 /**
+ * @brief Scene exit handler.
+ *
+ * @param[in,out] instance pointer to the NFC application instance.
+ */
+typedef void (*NfcProtocolSupportOnExit)(NfcApp* instance);
+
+/**
+ * @brief Protocol-specific scene interface.
+ *
+ * Needs on_exit as well as on_enter/on_event: an extra scene has no common wrapper to tear it down,
+ * so whatever it started (a poller, a dictionary handle, the LED) has to stop itself. Any handler
+ * may be NULL.
+ */
+typedef struct {
+    NfcProtocolSupportOnEnter on_enter; /**< Pointer to the on_enter() function, or NULL. */
+    NfcProtocolSupportOnEvent on_event; /**< Pointer to the on_event() function, or NULL. */
+    NfcProtocolSupportOnExit on_exit; /**< Pointer to the on_exit() function, or NULL. */
+} NfcProtocolSupportExtraScene;
+
+/**
  * @brief Abstract protocol support interface.
  */
 typedef struct {
     const uint32_t features; /**< Feature bitmask supported by the protocol. */
+
+    /**
+     * @brief Optional per-card feature bitmask.
+     *
+     * When non-NULL, overrides @c features and is evaluated against the currently loaded card, so a
+     * protocol can vary its feature set by card type. Receives the app instance for card-data access.
+     */
+    uint32_t (*get_features)(NfcApp* instance);
 
     /**
      * @brief Handlers for protocol-specific info scene.
@@ -125,6 +153,19 @@ typedef struct {
      * displaying short captions for what is happening.
      */
     NfcProtocolSupportSceneBase scene_write;
+
+    /**
+     * @brief Protocol-specific scenes that have no common equivalent.
+     *
+     * Dictionary attacks, unlock flows, key listings, extended info screens - these exist for one
+     * protocol only. A protocol lists them here, indexed by its own enumeration, and ships a thunk
+     * in the app for each one that names the protocol and the index (see
+     * scenes/nfc_scene_mf_plus_dict_attack.c). This array supplies the handler.
+     *
+     * Leave both fields zeroed if the protocol has no extra scenes.
+     */
+    const NfcProtocolSupportExtraScene* extra_scenes;
+    size_t extra_scenes_count;
 } NfcProtocolSupportBase;
 
 /**
@@ -134,8 +175,12 @@ typedef struct {
 
 /**
  * @brief Currently supported plugin API version.
+ *
+ * Bumped from 1 to 2: NfcProtocolSupportBase gained get_features/extra_scenes/extra_scenes_count,
+ * changing the struct layout, so a plugin built against the old layout must be refused rather than
+ * read past its own end.
  */
-#define NFC_PROTOCOL_SUPPORT_PLUGIN_API_VERSION 1
+#define NFC_PROTOCOL_SUPPORT_PLUGIN_API_VERSION 2
 
 /**
  * @brief Protocol support plugin interface.

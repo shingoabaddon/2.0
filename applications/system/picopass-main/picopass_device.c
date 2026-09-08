@@ -6,8 +6,8 @@
 
 #include <toolbox/protocols/protocol_dict.h>
 #include <toolbox/hex.h>
-#include <lfrfid/protocols/lfrfid_protocols.h>
-#include <lfrfid/lfrfid_dict_file.h>
+#include "lfrfid_export/lfrfid_protocols.h"
+#include "lfrfid_export/lfrfid_dict_file.h"
 #include "picopass_keys.h"
 
 #define TAG "PicopassDevice"
@@ -94,8 +94,8 @@ static bool picopass_device_save_file_seader(
 static bool picopass_device_save_file_lfrfid(PicopassDevice* dev, FuriString* file_path) {
     furi_assert(dev);
     PicopassPacs* pacs = &dev->dev_data.pacs;
-    ProtocolDict* dict = protocol_dict_alloc(lfrfid_protocols, LFRFIDProtocolMax);
-    ProtocolId protocol = LFRFIDProtocolHidGeneric;
+    ProtocolDict* dict = protocol_dict_alloc(pp_lfrfid_protocols, PPLfrfidProtocolMax);
+    ProtocolId protocol = PPLfrfidProtocolHidGeneric;
 
     bool result = false;
     uint64_t target = 0;
@@ -106,14 +106,14 @@ static bool picopass_device_save_file_lfrfid(PicopassDevice* dev, FuriString* fi
 
     if(pacs->bitLength == 26) {
         //3 bytes
-        protocol = LFRFIDProtocolH10301;
+        protocol = PPLfrfidProtocolH10301;
         // Remove parity
         target = (target >> 1) & 0xFFFFFF;
         // Reverse order since it'll get reversed again
         target = __builtin_bswap64(target) >> (64 - 24);
     } else if(pacs->bitLength < 44) {
         // https://gist.github.com/blark/e8f125e402f576bdb7e2d7b3428bdba6
-        protocol = LFRFIDProtocolHidGeneric;
+        protocol = PPLfrfidProtocolHidGeneric;
         if(pacs->bitLength <= 36) {
             uint64_t header = 1ULL << 37;
             target = __builtin_bswap64((target | sentinel | header) << 4) >> (64 - 48);
@@ -122,7 +122,7 @@ static bool picopass_device_save_file_lfrfid(PicopassDevice* dev, FuriString* fi
         }
     } else {
         //8 bytes
-        protocol = LFRFIDProtocolHidExGeneric;
+        protocol = PPLfrfidProtocolHidExGeneric;
         target = __builtin_bswap64(target);
     }
 
@@ -131,7 +131,7 @@ static bool picopass_device_save_file_lfrfid(PicopassDevice* dev, FuriString* fi
     if(data_size < 8) {
         memcpy(data, (void*)&target, data_size);
     } else {
-        // data_size 12 for LFRFIDProtocolHidExGeneric
+        // data_size 12 for PPLfrfidProtocolHidExGeneric
         memcpy(data + 4, (void*)&target, 8);
     }
 

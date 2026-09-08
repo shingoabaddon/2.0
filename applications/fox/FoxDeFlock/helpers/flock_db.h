@@ -10,7 +10,7 @@
  * projects (colonelpanichacks/flock-you, 0xXyc/flock-you-wifi-recon) and the
  * DeFlock community (deflock.org). The OUI prefixes are generic vendor prefixes
  * observed in fielded Flock deployments, so an OUI match alone is "possible",
- * not "confirmed" -- behaviour (probe requests) and SSID naming raise the
+ * not "confirmed" -- behavior (probe requests) and SSID naming raise the
  * confidence. We never present an OUI-only hit as certain.
  */
 #pragma once
@@ -27,7 +27,7 @@ extern "C" {
 typedef enum {
     FlockConfidenceNone = 0, /**< No indicators matched. */
     FlockConfidencePossible, /**< OUI prefix match only (generic vendor prefix). */
-    FlockConfidenceLikely, /**< OUI + phone-home probe behaviour, or "flock/flck" substring. */
+    FlockConfidenceLikely, /**< OUI + phone-home probe behavior, or "flock/flck" substring. */
     FlockConfidenceProbeFp, /**< B1: probe IE-fingerprint matched a curated Flock
                               *   device-CLASS hash (survives MAC randomization).
                               *   A candidate class match, NOT a unique device --
@@ -173,7 +173,7 @@ typedef enum {
  * not reconstructible from these fields.
  *
  * FlockMethodUnknown is a HONEST answer, not a failure: the companion scores
- * probe-request behaviour we never see, so a "Likely" from a MAC outside our
+ * probe-request behavior we never see, so a "Likely" from a MAC outside our
  * tables genuinely has no indicator this side can name.
  *
  * @param mac    6-byte MAC (NULL-safe).

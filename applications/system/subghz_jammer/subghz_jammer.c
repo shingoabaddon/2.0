@@ -282,7 +282,7 @@ static JammerApp* jammer_app_alloc(void) {
     furi_assert(app->state);
     memset(app->state, 0, sizeof(JammerState));
 
-    /* Initialise RSSI windows to a floor value so the bar starts at zero */
+    /* Initialize RSSI windows to a floor value so the bar starts at zero */
     for(uint8_t i = 0; i < MONITOR_FREQ_COUNT; i++) {
         app->state->rssi[i] = -110.0f;
         app->state->window_max[i] = -110.0f;

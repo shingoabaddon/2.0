@@ -25,6 +25,20 @@ void desktop_clock_lock_set_backlight_callback(
     DesktopClockLockBacklightCallback callback,
     void* context);
 
+// Up = raise display brightness one step, Down = lower it. Same restriction
+// as the Left/Right backlight shortcut - only active outside the ringing
+// state. The scene applies the change and reports the resulting percentage
+// back via desktop_clock_lock_show_brightness() for the on-screen overlay.
+typedef void (*DesktopClockLockBrightnessCallback)(void* context, bool increase);
+void desktop_clock_lock_set_brightness_callback(
+    DesktopClockLockView* clock_lock,
+    DesktopClockLockBrightnessCallback callback,
+    void* context);
+
+// Briefly shows "Brightness: NN%" over the clock, same box/timer used for
+// the exit hint.
+void desktop_clock_lock_show_brightness(DesktopClockLockView* clock_lock, uint8_t percent);
+
 // Fires once a second while this screen is showing (reuses the view's own
 // digit-refresh timer) - used to keep re-asserting "Keep Backlight On"
 // without needing a second always-running timer elsewhere.

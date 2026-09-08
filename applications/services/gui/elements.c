@@ -92,6 +92,29 @@ void elements_scrollbar_pos(
     }
 }
 
+void elements_scrollbar_horizontal(
+    Canvas* canvas,
+    int32_t x,
+    int32_t y,
+    size_t width,
+    size_t pos,
+    size_t total) {
+    furi_check(canvas);
+
+    canvas_set_color(canvas, ColorWhite);
+    canvas_draw_box(canvas, x, y - 3, width, 3);
+
+    canvas_set_color(canvas, ColorBlack);
+    for(size_t i = x; i < width + x; i += 2) {
+        canvas_draw_dot(canvas, i, y - 2);
+    }
+
+    if(total) {
+        float block_w = ((float)width) / total;
+        canvas_draw_box(canvas, x + (block_w * pos), y - 3, MAX(block_w, 1), 3);
+    }
+}
+
 void elements_scrollbar(Canvas* canvas, size_t pos, size_t total) {
     furi_check(canvas);
 
@@ -1034,7 +1057,7 @@ void elements_fox_horizontal_menu_item(
         canvas_draw_rframe(canvas, x, y, width, height, 3);
     }
 
-    // Icon: draw current animation frame, centred horizontally, near top of cell
+    // Icon: draw current animation frame, centered horizontally, near top of cell
     if(icon) {
         size_t iw = icon_animation_get_width(icon);
         size_t ih = icon_animation_get_height(icon);
@@ -1044,7 +1067,7 @@ void elements_fox_horizontal_menu_item(
         UNUSED(ih);
     }
 
-    // Label: FontSecondary, centred, near bottom of cell
+    // Label: FontSecondary, centered, near bottom of cell
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str_aligned(
         canvas,

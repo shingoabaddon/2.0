@@ -387,7 +387,7 @@ static bool fox_setup_input_main(InputEvent* event, void* ctx) {
     // transition can leave buffered input events sitting in the queue (e.g.
     // residual presses from whatever was on screen the instant before, or
     // events generated during the transition itself). Those get delivered the
-    // moment this callback registers, causing the spotty first-press behaviour
+    // moment this callback registers, causing the spotty first-press behavior
     // seen only on auto-launch (never when launched cleanly from the Apps menu).
     // Simply discard anything that arrives before the window closes.
     if(model->ignore_input_until && furi_get_tick() < model->ignore_input_until) {

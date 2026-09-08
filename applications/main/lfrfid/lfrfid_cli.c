@@ -3,7 +3,7 @@
 #include <stdarg.h>
 #include <cli/cli_main_commands.h>
 #include <lib/toolbox/args.h>
-#include <lib/lfrfid/lfrfid_worker.h>
+#include <lfrfid/lfrfid_worker.h>
 #include <storage/storage.h>
 #include <toolbox/stream/file_stream.h>
 #include <toolbox/pipe.h>

@@ -482,10 +482,6 @@ static ModAnalApp* app_alloc(void) {
     app->gui         = furi_record_open(RECORD_GUI);
     app->view_port   = view_port_alloc();
     app->input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
-    view_port_draw_callback_set(app->view_port, draw_cb, app);
-    view_port_input_callback_set(app->view_port, input_cb, app->input_queue);
-    gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
-    view_port_update(app->view_port);
 
     app->dwell_timer = furi_timer_alloc(dwell_timer_cb, FuriTimerTypePeriodic, app);
 
@@ -497,6 +493,18 @@ static ModAnalApp* app_alloc(void) {
     while(g_mod_filter_loaded && g_mod_filter[app->preset_idx] == 0x00
           && app->preset_idx < app->preset_count - 1u)
         app->preset_idx++;
+
+    /* Register input + add the view port last, after all the SD-card
+     * reads above - registering earlier meant a button pressed during
+     * that loading window queued into input_queue same as any real press,
+     * then got silently thrown away by the drain (plus a 150ms delay!)
+     * that used to sit right after app_alloc() in the entry point below.
+     * Nothing can queue before this point now, so that dead window - and
+     * the drain that was working around it - is gone entirely. */
+    view_port_draw_callback_set(app->view_port, draw_cb, app);
+    view_port_input_callback_set(app->view_port, input_cb, app->input_queue);
+    gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
+    view_port_update(app->view_port);
 
     return app;
 }
@@ -535,18 +543,23 @@ static void app_free(ModAnalApp* app) {
 }
 
 int32_t subghz_modulation_analyzer_app(void* p) {
-    char return_marker[16] = {0};
-    if(p && ((const char*)p)[0]) strncpy(return_marker, (const char*)p, sizeof(return_marker)-1);
+    char return_marker[24] = {0};
+    bool return_to_garage = false;
+    if(p && ((const char*)p)[0]) {
+        const char* arg = (const char*)p;
+        if(strncmp(arg, "garage:", 7) == 0) {
+            return_to_garage = true;
+            arg += 7;
+        } else if(strncmp(arg, "core:", 5) == 0) {
+            arg += 5;
+        }
+        strncpy(return_marker, arg, sizeof(return_marker) - 1);
+    }
 
     furi_hal_subghz_reset();
     furi_hal_subghz_idle();
 
     ModAnalApp* app = app_alloc();
-
-    InputEvent drain;
-    while(furi_message_queue_get(app->input_queue, &drain, 0) == FuriStatusOk) {}
-    furi_delay_ms(150);
-    while(furi_message_queue_get(app->input_queue, &drain, 0) == FuriStatusOk) {}
 
     InputEvent event;
     while(!app->exit_requested) {
@@ -658,7 +671,11 @@ int32_t subghz_modulation_analyzer_app(void* p) {
         }
 
         Loader* loader = furi_record_open(RECORD_LOADER);
-        loader_enqueue_launch(loader, "subghz", NULL, LoaderDeferredLaunchFlagNone);
+        loader_enqueue_launch(
+            loader,
+            return_to_garage ? EXT_PATH("apps/Sub-GHz/subghz_garage.fap") : "subghz",
+            NULL,
+            LoaderDeferredLaunchFlagNone);
         furi_record_close(RECORD_LOADER);
     }
 

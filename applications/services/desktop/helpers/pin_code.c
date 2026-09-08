@@ -348,7 +348,7 @@ void fox_escrow_execute_wipe(void) {
     fox_pin_write_lockout_flag();
 
     // Kill USB immediately — guard against calling set_config when USB hardware is
-    // uninitialised. fox_full_wipe_sd() iterates the entire SD card and can take
+    // uninitialized. fox_full_wipe_sd() iterates the entire SD card and can take
     // several seconds; without this disconnect, USB/qFlipper/CLI stays live the whole time.
     if(furi_hal_usb_get_config() != NULL) {
         furi_hal_usb_set_config(NULL, NULL);

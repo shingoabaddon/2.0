@@ -9,6 +9,7 @@ App(
     fap_category="GPIO",
     sources=[
         "can_commander.c",
+        "can_commander_compat.c",
         "libraries/can_commander_uart.c",
         "views/dashboard/dashboard_core.c",
         "views/dashboard/dashboard_read.c",

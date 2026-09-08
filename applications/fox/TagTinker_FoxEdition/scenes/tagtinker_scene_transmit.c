@@ -415,7 +415,7 @@ static inline uint8_t bmp_read_pixel(const uint8_t* row_buf, uint16_t x) {
     return bit ? 0U : 1U;
 }
 
-/* Map an output row index to a source row using nearest-neighbour rescaling,
+/* Map an output row index to a source row using nearest-neighbor rescaling,
  * then read that source row (handling top-down vs bottom-up BMPs and the
  * stacked-plane layout used by 2bpp accent BMPs). The transmitter calls this
  * once per output row, with a small cache so we don't re-seek the file when
@@ -475,7 +475,7 @@ static bool tx_stream_bmp_image(TagTinkerApp* app) {
 
     /* Output dims come from the target's profile; source dims come from the
      * BMP file. The streaming pipeline below rescales source -> target with
-     * nearest-neighbour as it reads, so any BMP can drive any tag. */
+     * nearest-neighbor as it reads, so any BMP can drive any tag. */
     uint16_t tx_width  = (job->width  > 0U) ? job->width  : info.width;
     uint16_t tx_height = (job->height > 0U) ? job->height : info.height;
 

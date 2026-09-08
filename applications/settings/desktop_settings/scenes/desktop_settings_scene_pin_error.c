@@ -2,7 +2,6 @@
 // in this scene — it was vestigial and breaks external FAP compilation.
 #include <desktop/helpers/pin_code.h>   // SDK-style path (was absolute applications/services/...)
 #include "desktop_settings_scene.h"
-#include <assets_icons.h>
 #include "desktop_settings_icons.h"
 
 #include "../desktop_settings_app.h"

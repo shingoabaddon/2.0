@@ -290,6 +290,20 @@ bool subghz_txrx_protocol_is_transmittable(SubGhzTxRx* instance, bool check_type
 void subghz_txrx_receiver_set_filter(SubGhzTxRx* instance, SubGhzProtocolFlag filter);
 
 /**
+ * Set (or clear, with NULL) a per-protocol enable callback on the receiver -
+ * lets the app skip individually-disabled protocols during decode. See
+ * subghz_receiver_set_protocol_enabled_callback() in lib/subghz/receiver.h.
+ *
+ * @param instance Pointer to a SubGhzTxRx
+ * @param callback Callback, SubGhzReceiverProtocolEnabledCallback, or NULL
+ * @param context Context passed to the callback
+ */
+void subghz_txrx_set_protocol_enabled_callback(
+    SubGhzTxRx* instance,
+    SubGhzReceiverProtocolEnabledCallback callback,
+    void* context);
+
+/**
  * Set callback for receive data
  * 
  * @param instance Pointer to a SubGhzTxRx
@@ -362,6 +376,9 @@ bool subghz_txrx_radio_device_is_tx_allowed(SubGhzTxRx* instance, uint32_t frequ
 
 void subghz_txrx_set_debug_pin_state(SubGhzTxRx* instance, bool state);
 bool subghz_txrx_get_debug_pin_state(SubGhzTxRx* instance);
+
+void subghz_txrx_set_frequency_offset(SubGhzTxRx* instance, int32_t offset_hz);
+int32_t subghz_txrx_get_frequency_offset(SubGhzTxRx* instance);
 
 void subghz_txrx_reset_dynamic_and_custom_btns(SubGhzTxRx* instance);
 

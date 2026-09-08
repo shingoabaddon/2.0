@@ -46,6 +46,15 @@ typedef struct {
     bool    mod_filter_present;        /* true if loaded from file */
     bool    bypass_region_lock;   /* mirrors furi_hal_subghz's dangerous_frequency_i flag */
     char    file_prefix[12];      /* prepended to auto-generated .sub filenames when non-empty */
+    /* Automotive has no protocol groups of its own and no longer has a
+     * Radio Settings control for this - kept only so saving other settings
+     * from Automotive round-trips the value Garage's own Protocol Group
+     * screen wrote to the shared last_subghz.settings file, instead of
+     * clobbering it. Value/range meaning is Garage's
+     * SubGhzGarageProtocolGroup - see
+     * applications/fox/subghz_garage/protocols/protocol_groups.h. */
+    uint32_t protocol_group;
+    int32_t  frequency_offset; /**< Hz, crystal calibration offset applied to RX/TX frequency */
 } SubGhzLastSettings;
 
 /* Copy raw filter arrays in/out of the filter objects.

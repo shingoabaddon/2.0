@@ -9,9 +9,9 @@
  * physically cannot do the whole job.
  *
  *   ONBOARD — the built-in TSOP-75338 on PA0. It is a *demodulating* receiver:
- *     a band-pass filter centred on 38 kHz plus AGC, designed to pull remote
+ *     a band-pass filter centered on 38 kHz plus AGC, designed to pull remote
  *     control codes out of a sunlit room. That filter throws away anything that
- *     is not modulated near its centre frequency, so a covert camera whose
+ *     is not modulated near its center frequency, so a covert camera whose
  *     illuminator runs at steady DC current is INVISIBLE to it, no matter how
  *     bright. What it does catch is anything pulsed: remotes, IR beacons and
  *     link ports, PIR floodlights, and PWM-driven illuminators whose switching

@@ -1,5 +1,6 @@
 #include "subghz_last_settings.h"
 #include "subghz_i.h"
+#include <float_tools.h>
 
 #define TAG "SubGhzLastSettings"
 
@@ -28,6 +29,8 @@
 #define SUBGHZ_LAST_SETTING_FIELD_MOD_FILTER           "ModFilter"
 #define SUBGHZ_LAST_SETTING_FIELD_BYPASS_REGION_LOCK   "BypassRegionLock"
 #define SUBGHZ_LAST_SETTING_FIELD_FILE_PREFIX          "FilePrefix"
+#define SUBGHZ_LAST_SETTING_FIELD_PROTOCOL_GROUP       "ProtocolGroup"
+#define SUBGHZ_LAST_SETTING_FIELD_FREQUENCY_OFFSET     "FrequencyOffset"
 
 SubGhzLastSettings* subghz_last_settings_alloc(void) {
     SubGhzLastSettings* instance = malloc(sizeof(SubGhzLastSettings));
@@ -51,7 +54,7 @@ void subghz_last_settings_load(SubGhzLastSettings* instance, size_t preset_count
     instance->frequency_analyzer_trigger = SUBGHZ_LAST_SETTING_FREQUENCY_ANALYZER_TRIGGER;
     // See bin_raw_value in scenes/subghz_scene_receiver_config.c
     instance->filter = SubGhzProtocolFlag_Decodable;
-    instance->rssi = SUBGHZ_RAW_THRESHOLD_MIN;
+    instance->rssi = -65.0f;
     instance->hopping_threshold = -90.0f;
     instance->enable_preset_hopping = false;
     instance->preset_hopping_threshold = SUBGHZ_LAST_SETTING_DEFAULT_PRESET_HOPPING_THRESHOLD;
@@ -60,6 +63,8 @@ void subghz_last_settings_load(SubGhzLastSettings* instance, size_t preset_count
     instance->raw_playback_zoom_level = SUBGHZ_LAST_SETTING_DEFAULT_RAW_ZOOM_LEVEL;
     instance->bypass_region_lock = false;
     instance->file_prefix[0] = '\0';
+    instance->protocol_group = 0;
+    instance->frequency_offset = 0;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     FlipperFormat* fff_data_file = flipper_format_file_alloc(storage);
@@ -223,9 +228,40 @@ void subghz_last_settings_load(SubGhzLastSettings* instance, size_t preset_count
             }
             flipper_format_rewind(fff_data_file);
 
+            if(!flipper_format_read_uint32(
+                   fff_data_file,
+                   SUBGHZ_LAST_SETTING_FIELD_PROTOCOL_GROUP,
+                   &instance->protocol_group,
+                   1)) {
+                instance->protocol_group = 0;
+                flipper_format_rewind(fff_data_file);
+            }
+            if(!flipper_format_read_int32(
+                   fff_data_file,
+                   SUBGHZ_LAST_SETTING_FIELD_FREQUENCY_OFFSET,
+                   &instance->frequency_offset,
+                   1)) {
+                instance->frequency_offset = 0;
+                flipper_format_rewind(fff_data_file);
+            }
+
         } while(0);
     } else {
         FURI_LOG_E(TAG, "Error open file %s", SUBGHZ_LAST_SETTINGS_PATH);
+    }
+
+    /* One-time migration for existing SD cards: this file persists across
+     * firmware reflashes independent of firmware version (and is shared
+     * with the Garage/Gate/Other fork - same EXT_PATH), so a copy saved
+     * before RSSI Threshold got a sensible default still has the old
+     * disabled sentinel (SUBGHZ_RAW_THRESHOLD_MIN) written into it, and the
+     * version-gated read above happily loads that straight over the new
+     * default. Nobody has a real reason to deliberately pick the dropdown's
+     * "-----" (disabled) option on purpose - treat a saved value still
+     * sitting on the sentinel as "never configured" and apply the new
+     * default instead of the old one. */
+    if(float_is_equal(instance->rssi, SUBGHZ_RAW_THRESHOLD_MIN)) {
+        instance->rssi = -65.0f;
     }
 
     furi_string_free(temp_str);
@@ -240,6 +276,16 @@ void subghz_last_settings_load(SubGhzLastSettings* instance, size_t preset_count
 
     if(instance->preset_index > 4) {
         instance->preset_index = SUBGHZ_LAST_SETTING_DEFAULT_PRESET;
+    }
+
+    /* Automotive can't reference Garage's SUBGHZ_GARAGE_PROTOCOL_GROUP_COUNT
+     * (separate .fap, no shared link) - keep this in sync with
+     * protocol_groups.h by hand if the group count ever changes. Was stale
+     * at 5 (Garage's old group count) after Garage rebalanced to 11 groups,
+     * silently resetting the user's selection to Group 1 on Automotive's
+     * next save. */
+    if(instance->protocol_group >= 11) {
+        instance->protocol_group = 0;
     }
 }
 
@@ -377,6 +423,17 @@ bool subghz_last_settings_save(SubGhzLastSettings* instance) {
         }
         if(!flipper_format_write_string_cstr(
                file, SUBGHZ_LAST_SETTING_FIELD_FILE_PREFIX, instance->file_prefix)) {
+            break;
+        }
+        if(!flipper_format_write_uint32(
+               file, SUBGHZ_LAST_SETTING_FIELD_PROTOCOL_GROUP, &instance->protocol_group, 1)) {
+            break;
+        }
+        if(!flipper_format_write_int32(
+               file,
+               SUBGHZ_LAST_SETTING_FIELD_FREQUENCY_OFFSET,
+               &instance->frequency_offset,
+               1)) {
             break;
         }
         saved = true;

@@ -1,5 +1,6 @@
 import itertools
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -148,6 +149,15 @@ class AppBuilder:
             CPPPATH=[self.app_env.Dir(self.app_work_dir), self.app._appdir],
         )
 
+        if self.app.fap_exclude_libs:
+            # Drop toolchain libs this app opts out of, so the symbols they
+            # provide stay undefined and get resolved from the firmware API
+            # table by the loader instead of being duplicated into the binary.
+            excluded = set(self.app.fap_exclude_libs)
+            self.app_env.Replace(
+                LIBS=[lib for lib in self.app_env["LIBS"] if lib not in excluded]
+            )
+
         app_sources = self.app_env.GatherSources(
             [self.app.sources, "!lib"], self.app_work_dir
         )
@@ -182,6 +192,7 @@ class AppBuilder:
             app_artifacts.compact,
             _CHECK_APP=self.app.do_strict_import_checks
             and self.app_env.get("STRICT_FAP_IMPORT_CHECK"),
+            APP=self.app,
         )[0]
 
         if self.app.apptype == FlipperAppType.PLUGIN:
@@ -283,13 +294,46 @@ def prepare_app_metadata(target, source, env):
         )
 
 
+_API_TABLE_SYM_RE = re.compile(r"API_(?:METHOD|VARIABLE)\(\s*([A-Za-z_]\w*)")
+
+
+def _get_parent_private_api_symbols(app):
+    # PLUGIN apps resolve unresolved symbols not just against the firmware's
+    # own SDK (api_symbols.csv), but also - at runtime, via the loader's
+    # per-app ElfApiInterface mechanism - against any private symbol table
+    # their required parent app exposes for its own plugins (e.g. nfc's
+    # applications/main/nfc/api/nfc_app_api_table_i.h). This validator only
+    # ever checked the firmware-wide SDK, so a plugin genuinely using its
+    # parent's private symbols always showed as a false-positive Missing
+    # Imports warning. Parse that table's API_METHOD/API_VARIABLE entries
+    # (a stable, simple macro pattern) so those symbols count as resolved.
+    if app.apptype != FlipperAppType.PLUGIN or not app.requires or not app._appmanager:
+        return set()
+
+    symbols = set()
+    for parent_app_id in app.requires:
+        parent_app = app._appmanager.get(parent_app_id)
+        if not parent_app or not parent_app._appdir:
+            continue
+        table_path = pathlib.Path(
+            parent_app._appdir.abspath, "api", f"{parent_app.appid}_app_api_table_i.h"
+        )
+        if not table_path.is_file():
+            continue
+        symbols.update(_API_TABLE_SYM_RE.findall(table_path.read_text(encoding="utf-8")))
+    return symbols
+
+
 def _validate_app_imports(target, source, env):
     sdk_cache = SdkCache(env["SDK_DEFINITION"].path, load_version_only=False)
     app_syms = set()
     with open(target[0].path, "rt") as f:
         for line in f:
             app_syms.add(line.split()[0])
-    unresolved_syms = app_syms - sdk_cache.get_valid_names()
+    extra_valid_syms = set()
+    if app := env.get("APP"):
+        extra_valid_syms = _get_parent_private_api_symbols(app)
+    unresolved_syms = app_syms - sdk_cache.get_valid_names() - extra_valid_syms
     if unresolved_syms:
         warning_msg = fg.brightyellow(
             f"{source[0].path}: app may not be runnable. Symbols not resolved using firmware's API: "
@@ -304,6 +348,12 @@ def _validate_app_imports(target, source, env):
         if env.get("_CHECK_APP"):
             raise UserError(warning_msg)
         else:
+            # SCons.Warnings.warn() writes to stderr via fbt_tweaks.py's
+            # fbt_warning() and can be suppressed entirely depending on
+            # warning-class enablement, so a genuine unresolved-import bug
+            # can silently miss our own stdout-captured compile logs. Print
+            # unconditionally too so this is never missed before flashing.
+            print(fg.red("MISSING IMPORTS\t") + warning_msg)
             SCons.Warnings.warn(SCons.Warnings.LinkWarning, warning_msg),
 
 

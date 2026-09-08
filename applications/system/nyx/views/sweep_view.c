@@ -93,7 +93,7 @@ static void draw_nulling(Canvas* canvas, const SweepModel* m) {
     }
 }
 
-/* "getting warmer" arrow, centred on (cx,cy). Up = rising, down = falling,
+/* "getting warmer" arrow, centered on (cx,cy). Up = rising, down = falling,
  * a flat bar = holding steady. */
 static void draw_trend_at(Canvas* canvas, int cx, int cy, int8_t trend) {
     if(trend > 0) {

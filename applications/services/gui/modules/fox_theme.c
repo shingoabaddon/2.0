@@ -1,20 +1,13 @@
-/* fox_theme.c — Fox firmware menu-theme implementation.
- * Compiled alongside submenu.c / variable_item_list.c in
- * applications/services/gui/modules/. */
-
 #include "fox_theme.h"
 #include <storage/storage.h>
 #include <furi_hal.h>
 
-/* 0 = Classic, 1 = Fox, 255 = not yet loaded from file */
+/* 0 = Classic, 1 = Fox, 2 = Carousel, 3 = Slider, 4 = Tiny, 255 = not yet loaded from file */
 static uint8_t g_fox_theme = 255u;
 
-bool fox_theme_is_active(void) {
+uint8_t fox_theme_get_style(void) {
     if(g_fox_theme == 255u) {
-        /* First access — read persisted value from internal storage.
-         * Default is Fox Theme (1) when the file doesn't exist yet
-         * (i.e. fresh install / factory reset). */
-        uint8_t val  = 1u;   /* default: Fox Theme */
+        uint8_t val  = 1u;
         bool    found = false;
         Storage* st = furi_record_open(RECORD_STORAGE);
         if(st) {
@@ -27,20 +20,19 @@ bool fox_theme_is_active(void) {
             storage_file_free(f);
             furi_record_close(RECORD_STORAGE);
         }
-        /* File not found → fresh install: use Fox as default.
-         * Do NOT call fox_theme_set() here — is_active() may be called
-         * from a GUI draw callback and fox_theme_set() writes to storage,
-         * which is unsafe from that context and can cause g_fox_theme to
-         * be written back to Fox even after the user selects Classic.
-         * The file will be written by fox_theme_set() when the user first
-         * visits Desktop Settings → Menu Style. */
-        g_fox_theme = found ? ((val != 0u) ? 1u : 0u) : 1u;
+        /* Don't call fox_theme_set_style() here - this can run from a GUI
+         * draw callback, and writing to storage from there is unsafe. */
+        g_fox_theme = found ? ((val <= 4u) ? val : 1u) : 1u;
     }
-    return g_fox_theme != 0u;
+    return g_fox_theme;
 }
 
-void fox_theme_set(bool active) {
-    g_fox_theme = active ? 1u : 0u;
+bool fox_theme_is_active(void) {
+    return fox_theme_get_style() != 0u;
+}
+
+void fox_theme_set_style(uint8_t style) {
+    g_fox_theme = (style <= 4u) ? style : 1u;
     Storage* st = furi_record_open(RECORD_STORAGE);
     if(st) {
         File* f = storage_file_alloc(st);
@@ -51,4 +43,8 @@ void fox_theme_set(bool active) {
         storage_file_free(f);
         furi_record_close(RECORD_STORAGE);
     }
+}
+
+void fox_theme_set(bool active) {
+    fox_theme_set_style(active ? 1u : 0u);
 }

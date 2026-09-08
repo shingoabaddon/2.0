@@ -256,7 +256,7 @@ void csight_heatmap_add(CSIghtApp* app, int16_t x_cm, int16_t y_cm) {
     if(gy < 0) gy = 0;
     if(gy >= HEATMAP_GRID) gy = HEATMAP_GRID - 1;
 
-    // Add heat, capped at 255. Neighbouring cells get a smaller bump too —
+    // Add heat, capped at 255. Neighboring cells get a smaller bump too —
     // avoids a single hard pixel-sized dot and better reflects that the
     // position estimate itself has some inherent fuzziness (see v2.3 notes).
     for(int dy = -1; dy <= 1; dy++) {
@@ -302,7 +302,7 @@ void csight_tick(CSIghtApp* app) {
     if(app->state == AppStateBooting) {
         app->boot_frame++;
         if(app->boot_frame > 40) {
-            // Same detect gate fox_file_downloader/fox_esp32_commander etc
+            // Same detect gate fox_file_downloader/foxhub etc
             // run at launch: bring up UART and ping the generic "info"
             // command before ever touching the CSI-specific protocol.
             csight_uart_init(app);
@@ -777,7 +777,7 @@ CSIghtApp* csight_app_alloc(void) {
 
 void csight_app_free(CSIghtApp* app) {
     furi_hal_power_insomnia_exit();
-    // Only deinit UART if it was actually initialised
+    // Only deinit UART if it was actually initialized
     if(app->esp_at != NULL) {
         csight_uart_deinit(app);
     }

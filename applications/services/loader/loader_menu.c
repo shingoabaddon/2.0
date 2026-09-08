@@ -12,6 +12,7 @@
 #include "loader.h"
 #include "loader_menu.h"
 #include "loader_main_menu_pins.h"
+#include "../desktop/desktop_settings.h"
 
 #define TAG "LoaderMenu"
 
@@ -53,7 +54,27 @@ typedef struct {
     // menu_add_item() stores the label pointer, not a copy - these must
     // outlive the menu, so they can't be per-iteration stack locals.
     char pin_labels[MAIN_MENU_PINS_MAX][MAIN_MENU_PINS_PATH_LEN];
+
+    // Needed to rebuild the primary menu on LoaderMenuCustomEventRefreshPins
+    // - see that event's own comment below for why this exists.
+    LoaderMenu* loader_menu;
+    Loader* loader;
+    FuriPubSubSubscription* loader_sub;
 } LoaderMenuApp;
+
+// Pins are only read from disk into app->pins at alloc time, but this menu
+// instance stays alive (just hidden) for as long as the Apps menu itself
+// stays open - launching Fox Settings via loader_menu_fox_settings_callback
+// doesn't tear it down, it just runs on top. So a pin added/removed via Fox
+// Settings' "Main Menu Apps" and saved to disk never reaches this already-
+// built menu until the whole LoaderMenuApp is freed and reallocated (i.e.
+// backing all the way out to the Desktop and reopening the Apps menu).
+// Fixed by subscribing to the Loader's own pubsub for
+// LoaderEventTypeApplicationStopped (fires whenever the app running on top
+// closes, regardless of which one) and reloading+rebuilding the primary
+// menu at that point - cheap even when nothing changed, and catches every
+// path back to this menu, not just Fox Settings specifically.
+#define LoaderMenuCustomEventRefreshPins 0
 
 static void loader_menu_start(const char* name) {
     Loader* loader = furi_record_open(RECORD_LOADER);
@@ -238,13 +259,54 @@ static void loader_menu_build_submenu(LoaderMenuApp* app, LoaderMenu* loader_men
     }
 }
 
+static bool loader_menu_custom_event_callback(void* context, uint32_t event) {
+    LoaderMenuApp* app = context;
+    if(event == LoaderMenuCustomEventRefreshPins) {
+        main_menu_pins_load(&app->pins);
+        menu_reset(app->primary_menu);
+        loader_menu_build_menu(app, app->loader_menu);
+    }
+    return true;
+}
+
+// Runs on the Loader service's own thread (furi_pubsub_publish's caller),
+// not this app's - just marshal onto our own ViewDispatcher via a custom
+// event instead of touching app->primary_menu here directly.
+static void loader_menu_loader_pubsub_callback(const void* message, void* context) {
+    LoaderMenuApp* app = context;
+    const LoaderEvent* event = message;
+    if(event->type == LoaderEventTypeApplicationStopped) {
+        view_dispatcher_send_custom_event(app->view_dispatcher, LoaderMenuCustomEventRefreshPins);
+    }
+}
+
 static LoaderMenuApp* loader_menu_app_alloc(LoaderMenu* loader_menu) {
     LoaderMenuApp* app = malloc(sizeof(LoaderMenuApp));
     app->gui = furi_record_open(RECORD_GUI);
     app->view_dispatcher = view_dispatcher_alloc();
     app->primary_menu = menu_alloc();
     app->settings_menu = submenu_alloc();
+    app->loader_menu = loader_menu;
     main_menu_pins_load(&app->pins);
+
+    app->loader = furi_record_open(RECORD_LOADER);
+    view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
+    view_dispatcher_set_custom_event_callback(
+        app->view_dispatcher, loader_menu_custom_event_callback);
+    app->loader_sub = furi_pubsub_subscribe(
+        loader_get_pubsub(app->loader), loader_menu_loader_pubsub_callback, app);
+
+    // Only the primary Apps menu picks up the user's Fox Theme/Carousel
+    // choice - menu_alloc() defaults every Menu instance to Classic so any
+    // other app pulling in this shared widget for its own internal menu
+    // isn't affected by that setting. Heap-allocated, not stack: this
+    // thread only has a 1024-byte stack and DesktopSettings is sizable.
+    DesktopSettings* settings = malloc(sizeof(DesktopSettings));
+    if(settings) {
+        desktop_settings_load(settings);
+        menu_set_theme(app->primary_menu, settings->menu_theme);
+        free(settings);
+    }
 
     loader_menu_build_menu(app, loader_menu);
     loader_menu_build_submenu(app, loader_menu);
@@ -266,6 +328,9 @@ static LoaderMenuApp* loader_menu_app_alloc(LoaderMenu* loader_menu) {
 }
 
 static void loader_menu_app_free(LoaderMenuApp* app) {
+    furi_pubsub_unsubscribe(loader_get_pubsub(app->loader), app->loader_sub);
+    furi_record_close(RECORD_LOADER);
+
     view_dispatcher_remove_view(app->view_dispatcher, LoaderMenuViewPrimary);
     view_dispatcher_remove_view(app->view_dispatcher, LoaderMenuViewSettings);
     view_dispatcher_free(app->view_dispatcher);

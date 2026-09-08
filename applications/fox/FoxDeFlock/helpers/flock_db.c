@@ -242,7 +242,7 @@ FlockConfidence flock_ssid_confidence(const char* ssid) {
  * uint32 of the tagged-IE skeleton, computed on the ESP companion).
  *
  * SHIPS EMPTY / INERT. We do NOT yet have confirmed-Flock IE-fp captures, so
- * this table is intentionally empty: nothing matches -> zero behaviour change ->
+ * this table is intentionally empty: nothing matches -> zero behavior change ->
  * zero false positives, which is exactly right per precision-over-recall. The
  * full pipeline (hash on ESP -> transmit -> parse -> compare) ships and works;
  * it simply has no seeds to match until real captures are validated.
@@ -346,7 +346,7 @@ const char* flock_method_str(FlockMethod method) {
         return "BLE mfg ID";
     case FlockMethodUnknown:
     default:
-        // Not "none": the companion DID score it, on probe behaviour we cannot
+        // Not "none": the companion DID score it, on probe behavior we cannot
         // re-derive here. Saying "no indicator" would be the wrong claim.
         return "ESP probe rule";
     }

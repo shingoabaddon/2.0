@@ -1,0 +1,13 @@
+App(
+    appid="ram_monitor",
+    name="RAM Monitor",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="ram_monitor_app",
+    requires=["gui"],
+    stack_size=1 * 1024,
+    fap_category="Debug",
+    fap_description="Temporary RAM/heap diagnostic display (same numbers as CLI 'free') - delete when done testing.",
+    # No fap_icon - it's optional (elfmanifest.py just skips embedding one
+    # if unset), and generating a real 10x10 PNG isn't worth it for a
+    # throwaway tool. Shows with a blank/default icon in the Apps list.
+)
