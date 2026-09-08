@@ -14,11 +14,13 @@ struct FlipperApplication {
     ELFFile* elf;
     FuriThread* thread;
     void* ep_thread_args;
+
+    bool preloaded_manifest;
 };
 
 /********************** Debugger access to loader state **********************/
 
-LIST_DEF(FlipperApplicationList, const FlipperApplication*, M_POD_OPLIST); // NOLINT
+LIST_DEF(FlipperApplicationList, const FlipperApplication*, M_POD_OPLIST); //NOLINT
 
 FlipperApplicationList_t flipper_application_loaded_app_list = {0};
 static bool flipper_application_loaded_app_list_initialized = false;
@@ -59,8 +61,14 @@ FlipperApplication*
     app->elf = elf_file_alloc(storage, api_interface);
     app->thread = NULL;
     app->ep_thread_args = NULL;
+    app->preloaded_manifest = false;
 
     return app;
+}
+
+void flipper_application_disable_xip(FlipperApplication* app) {
+    furi_check(app);
+    elf_file_disable_xip(app->elf);
 }
 
 bool flipper_application_is_plugin(FlipperApplication* app) {
@@ -126,7 +134,9 @@ static bool flipper_application_process_manifest_section(
     void* context) {
     FlipperApplicationManifest* manifest = context;
 
-    if(size < sizeof(FlipperApplicationManifest)) {
+    // Support both OFW manifest and extended manifest with flags
+    if(size < sizeof(FlipperApplicationManifestOfw) ||
+       size > sizeof(FlipperApplicationManifestEx)) {
         return false;
     }
 
@@ -134,8 +144,15 @@ static bool flipper_application_process_manifest_section(
         return true;
     }
 
-    return storage_file_seek(file, offset, true) &&
-           storage_file_read(file, manifest, size) == size;
+    bool result = storage_file_seek(file, offset, true) &&
+                  storage_file_read(file, manifest, size) == size;
+
+    // Default flags when loading OFW manifests that don't include flags
+    if(result && size < sizeof(FlipperApplicationManifestEx)) {
+        manifest->flags = FlipperApplicationFlagDefault;
+    }
+
+    return result;
 }
 
 // we can't use const char* as context because we will lose the const qualifier
@@ -154,13 +171,39 @@ static bool flipper_application_process_assets_section(
 
 static FlipperApplicationPreloadStatus
     flipper_application_load(FlipperApplication* app, const char* path, bool load_full) {
-    if(!elf_file_open(app->elf, path)) {
+    if(!app->preloaded_manifest && !elf_file_open(app->elf, path)) {
         return FlipperApplicationPreloadStatusInvalidFile;
+    }
+
+    // Load manifest section FIRST so we can check flags before section table loading.
+    // The section table load triggers elf_setup_xip(), which needs to know
+    // about ForceXIP before it runs.
+    if(!app->preloaded_manifest &&
+       elf_process_section(
+           app->elf, ".fapmeta", flipper_application_process_manifest_section, &app->manifest) !=
+           ElfProcessSectionResultSuccess) {
+        return FlipperApplicationPreloadStatusInvalidFile;
+    }
+
+    // Avoid preloading manifest twice, when user calls both preload_manifest() and preload()
+    if(!load_full) {
+        app->preloaded_manifest = true;
     }
 
     // if we are loading full file
     if(load_full) {
-        // load section table
+        /* Auto-disable XIP for plugins. */
+        if(app->manifest.stack_size == 0) {
+            elf_file_disable_xip(app->elf);
+        }
+
+        /* Force XIP if the app requests it via manifest flag.
+         * Must be set BEFORE loading section table, which calls elf_setup_xip(). */
+        if(app->manifest.flags & FlipperApplicationFlagForceXIP) {
+            elf_file_force_xip(app->elf);
+        }
+
+        // load section table (this calls elf_setup_xip internally)
         ElfLoadSectionTableResult load_result = elf_file_load_section_table(app->elf);
         if(load_result == ElfLoadSectionTableResultError) {
             return FlipperApplicationPreloadStatusInvalidFile;
@@ -177,13 +220,6 @@ static FlipperApplicationPreloadStatus
                &preload_context) == ElfProcessSectionResultCannotProcess) {
             return FlipperApplicationPreloadStatusInvalidFile;
         }
-    }
-
-    // load manifest section
-    if(elf_process_section(
-           app->elf, ".fapmeta", flipper_application_process_manifest_section, &app->manifest) !=
-       ElfProcessSectionResultSuccess) {
-        return FlipperApplicationPreloadStatusInvalidFile;
     }
 
     return flipper_application_validate_manifest(app);
@@ -298,7 +334,7 @@ const char* flipper_application_load_status_to_string(FlipperApplicationLoadStat
     case FlipperApplicationLoadStatusUnspecifiedError:
         return "Unknown error";
     case FlipperApplicationLoadStatusMissingImports:
-        return "Update Firmware to use with this Application (MissingImports)";
+        return "Update Application or Firmware to compatible versions (MissingImports)";
     }
 
     return "Unknown error";
@@ -341,25 +377,47 @@ bool flipper_application_load_name_and_icon(
     furi_check(icon_ptr);
     furi_check(item_name);
 
-    FlipperApplication* app = flipper_application_alloc(storage, firmware_api_interface);
+    bool load_success = true;
 
-    FlipperApplicationPreloadStatus preload_res =
-        flipper_application_preload_manifest(app, furi_string_get_cstr(path));
-
-    bool load_success = false;
-
-    if(preload_res == FlipperApplicationPreloadStatusSuccess) {
-        const FlipperApplicationManifest* manifest = flipper_application_get_manifest(app);
-        if(manifest->has_icon) {
-            memcpy(*icon_ptr, manifest->icon, FAP_MANIFEST_MAX_ICON_SIZE);
-        }
-        furi_string_set(item_name, manifest->name);
-        load_success = true;
-    } else {
-        FURI_LOG_E(TAG, "Failed to preload %s", furi_string_get_cstr(path));
+    StorageData* storage_data;
+    if(storage_get_data(storage, path, &storage_data) == FSE_OK &&
+       storage_path_already_open(path, storage_data)) {
         load_success = false;
     }
 
-    flipper_application_free(app);
+    if(load_success) {
+        load_success = false;
+
+        FlipperApplication* app = flipper_application_alloc(storage, firmware_api_interface);
+
+        FlipperApplicationPreloadStatus preload_res =
+            flipper_application_preload_manifest(app, furi_string_get_cstr(path));
+
+        if(preload_res == FlipperApplicationPreloadStatusSuccess ||
+           preload_res == FlipperApplicationPreloadStatusApiTooOld ||
+           preload_res == FlipperApplicationPreloadStatusApiTooNew) {
+            const FlipperApplicationManifest* manifest = flipper_application_get_manifest(app);
+            if(manifest->has_icon) {
+                memcpy(*icon_ptr, manifest->icon, FAP_MANIFEST_MAX_ICON_SIZE);
+            }
+            furi_string_set(item_name, manifest->name);
+            load_success = true;
+        } else {
+            FURI_LOG_E(TAG, "Failed to preload %s", furi_string_get_cstr(path));
+            load_success = false;
+        }
+
+        flipper_application_free(app);
+    }
+
+    if(!load_success) {
+        size_t offset = furi_string_search_rchar(path, '/');
+        if(offset != FURI_STRING_FAILURE) {
+            furi_string_set_n(item_name, path, offset + 1, furi_string_size(path) - offset - 1);
+        } else {
+            furi_string_set(item_name, path);
+        }
+    }
+
     return load_success;
 }
