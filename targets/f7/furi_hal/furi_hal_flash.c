@@ -442,7 +442,8 @@ void furi_hal_flash_write_dword(size_t address, uint64_t data) {
     furi_hal_flash_end(false);
 
     /* Wait for last operation to be completed */
-ag_stat = DWT->CYCCNT - op_stat;
+    furi_check(furi_hal_flash_wait_last_operation(FURI_HAL_FLASH_TIMEOUT));
+    op_stat = DWT->CYCCNT - op_stat;
     FURI_LOG_T(
         TAG,
         "write_dword took %lu clocks or %fus",
@@ -678,8 +679,29 @@ bool furi_hal_flash_ob_set_word(size_t word_idx, const uint32_t value) {
     }
 
     furi_hal_flash_ob_unlock();
+
+    /* 2.
+     * Write the desired options value in the options registers */
     *reg_def->ob_register_address = value;
+
+    /* 3.
+     * Check that no Flash memory operation is on going by checking the BSY && PESD */
+    furi_check(furi_hal_flash_wait_last_operation(FURI_HAL_FLASH_TIMEOUT));
+
+    while(LL_FLASH_IsActiveFlag_OperationSuspended()) {
+        furi_thread_yield();
+    };
+
+    /* 4.
+     * Set the Options start bit OPTSTRT */
+    SET_BIT(FLASH->CR, FLASH_CR_OPTSTRT);
+
+    /* 5.
+     * Wait for the BSY bit to be cleared */
+    furi_check(furi_hal_flash_wait_last_operation(FURI_HAL_FLASH_TIMEOUT));
+
     furi_hal_flash_ob_lock();
+
     return true;
 }
 
